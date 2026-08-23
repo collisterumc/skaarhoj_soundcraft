@@ -142,19 +142,19 @@ actually changes. There is no subscribe step. Three rules:
 1. **No self-echo on writes.** A client that sends `SETD^<path>^<v>` never receives that
    `SETD` back. Other clients do, within 41–75 ms.
 2. **No push when nothing changes.** Writing a path's current value is silent to everyone.
-3. **Mixer-generated changes reach everyone, sender included.** State the mixer computes
-   itself — `var.isRecording` after `RECTOGGLE`, `var.currentSnapshot` and the ~140 keys
-   after `LOADSNAPSHOT` — is delivered to the sender too. Rule 1 suppresses only the exact
-   message the sender wrote.
+3. **Mixer-generated changes reach everyone, sender included.** The mixer delivers state it
+   computes itself to the sender too. That covers `var.isRecording` after `RECTOGGLE`, and
+   `var.currentSnapshot` plus the ~140 keys after `LOADSNAPSHOT`. Rule 1 suppresses only
+   the exact message the sender wrote.
 
 Consequences:
 
-- Feedback for external changes is free: reduce all inbound `SETD`/`SETS` into the store
-  and forward mapped keys to `toManager`.
+- Feedback for external changes costs nothing. Reduce all inbound `SETD`/`SETS` into the
+  store and forward mapped keys to `toManager`.
 - **Our own writes are never confirmed by the mixer.** Rules 1 and 2 mean a write can
-  produce no wire traffic at all, so assumed-state cannot be cleared by waiting for an
-  echo. The core confirms optimistically: after sending, ingest the sent value as current
-  (see Decision log 2026-08-23). Use `acceptanceThreshold` on floats anyway, since other
+  produce no wire traffic at all. So waiting for an echo never clears assumed-state. The
+  core confirms optimistically instead: after sending, ingest the sent value as current
+  (see Decision log 2026-08-23). Use `acceptanceThreshold` on floats anyway, because other
   clients' float pushes still arrive at ~9 decimal places.
 - Rule 1 also removes the feedback-loop risk for our own traffic. Still do **not** re-send
   to the mixer in response to inbound messages; only `fromManager` traffic goes out.
@@ -193,8 +193,8 @@ Consequences:
     acceptanceThreshold ~0.001, fine/coarse steps.
   - **Read-only display** (current snapshot name, rec time): ControlStyle NoControl,
     ValueType String, `RecommendedParamForTextDisplay`.
-    (Dynamic Opt lists exist in the framework — `optionListIsDynamic` +
-    `optionListUpdate` — but are not used in v1 per the snapshot-UX decision.)
+    (The framework does offer dynamic Opt lists, via `optionListIsDynamic` and
+    `optionListUpdate`. v1 does not use them, per the snapshot-UX decision.)
 - Dimensions: register mute/fader once with a channel dimension sized per model, using
   `elementLabels` for default channel names. Consider live label updates from
   `i.<n>.name` (verify corelib support for dynamic element labels — TBD).
@@ -247,28 +247,29 @@ per device goroutine (runs for the life of the service):
 
 ### Mixer power-cycling is normal operation
 
-In the target installation the SKAARHOJ controller switches mains power to the mixer
-while the QuickBar — and therefore this core — stays up. The mixer disappearing and
+In the target installation the SKAARHOJ controller switches mains power to the mixer. The
+QuickBar stays up throughout, and so does this core. The mixer disappearing and
 reappearing is **routine**, not an error condition:
 
 - **Reconnect forever.** The per-device loop never exits; 2 s backoff between attempts.
   Log the transition once per state change (connected ↔ disconnected), not per retry
   attempt, to avoid log spam during long power-off periods.
-- **Dead-link detection.** A power cut usually produces no TCP FIN, so a blocked read
-  can hang indefinitely. Use a read deadline (~5 s): the mixer chatters continuously —
-  measured `RTA` ~27 Hz, `VU2` ~6 Hz, `2::` ~13 Hz, worst observed gap 2.65 s — so silence
-  means the link is dead; drop and redial. (`ALIVE` is client→mixer only.) Idle traffic
-  confirmed 2026-08-23; behavior on an actual power cut is still untested (§9).
-- **On disconnect:** set `connection`=0 — Reactor indicates the state and blocks the
-  other parameters (none set `controllableWhileDisconnected`). Clear the in-memory
-  store and snapshot cache so no stale state is served or used for gating; the record
-  toggle and snapshot up/down become logged no-ops while disconnected.
+- **Dead-link detection.** A power cut usually produces no TCP FIN, so a blocked read can
+  hang indefinitely. Use a read deadline of ~5 s. The mixer chatters continuously:
+  measured `RTA` ~27 Hz, `VU2` ~6 Hz, `2::` ~13 Hz, worst observed gap 2.65 s. Silence
+  therefore means the link is dead, so drop and redial. (`ALIVE` is client→mixer only.)
+  Idle traffic was confirmed 2026-08-23. Behavior on an actual power cut is still
+  untested (§9).
+- **On disconnect:** set `connection`=0. Reactor then indicates the state and blocks the
+  other parameters (none set `controllableWhileDisconnected`). Clear the in-memory store
+  and snapshot cache so no stale state is served or used for gating. The record toggle and
+  snapshot up/down become logged no-ops while disconnected.
 - **While disconnected:** discard `fromManager` writes (debug log). Do **not** queue
-  commands for replay at power-on — a stale unmute or `RECTOGGLE` firing when the mixer
+  commands for replay at power-on. A stale unmute or `RECTOGGLE` firing when the mixer
   comes back would be surprising and potentially harmful.
-- **On reconnect:** the mixer pushes a full initial state dump, so current values resync
-  through the normal ingest path for free; re-request `SHOWLIST` / `SNAPSHOTLIST` to
-  rebuild the snapshot cache.
+- **On reconnect:** the mixer pushes a full initial state dump. Current values therefore
+  resync through the normal ingest path for free. Re-request `SHOWLIST` / `SNAPSHOTLIST`
+  to rebuild the snapshot cache.
 
 - Store: `map[string]string` + typed getters; keep raw dump so future parameters need no
   protocol changes.
@@ -279,12 +280,12 @@ reappearing is **routine**, not an error condition:
   button display. Race window accepted (G0 decision 2026-07-20; matches the mixer's own
   web UI).
 - **In-flight guard replaces `recBusy` suppression.** Measured on hardware 2026-08-23:
-  `RECTOGGLE` → `var.isRecording` takes ~206 ms, and `var.recBusy` does not cover it —
-  it never fires on start, and on stop it pulses for only ~76 ms, clearing in the same
-  batch as `isRecording`. So the core tracks its own in-flight state: after sending
-  `RECTOGGLE`, ignore further toggles until `var.isRecording` matches the target or a
-  ~2 s timeout expires (Decision log 2026-08-23). This is what protects against a corelib
-  `retryCount` double-fire undoing the first command.
+  `RECTOGGLE` reaches `var.isRecording` in ~206 ms. `var.recBusy` does not cover that
+  window. It never fires on start, and on stop it pulses for only ~76 ms, clearing in the
+  same batch as `isRecording`. So the core tracks its own in-flight state instead: after
+  sending `RECTOGGLE`, ignore further toggles until `var.isRecording` matches the target
+  or a ~2 s timeout expires (Decision log 2026-08-23). That guard is what stops a corelib
+  `retryCount` double-fire from undoing the first command.
 - `var.recBusy` is still ingested for the read-only `record_busy` parameter, but nothing
   gates on it.
 
@@ -434,8 +435,8 @@ values first and restored them afterwards; restores were verified against a full
   dump matched §2.6's Ui16 row exactly: `i` 0–11, `l` 0–1, `p` 0–1, `f` 0–3, `s` 0–3,
   `a` 0–5.
 - **Changes are broadcast only when the value actually changes.** Re-writing a path with
-  its current value produces no push to anyone. Combined with the no-self-echo rule, a
-  write can be entirely silent on the wire.
+  its current value produces no push to anyone. A write can therefore be entirely silent
+  on the wire: unchanged values reach nobody, and the writer never hears its own change.
 - **The mixer does not validate or clamp values.** `SETD^i.0.mix^1.5` and `^-0.2` were
   stored verbatim; `SETD^i.0.mute^2` and `^0.5` were accepted as-is. Non-numeric and empty
   values are ignored. **The core must clamp to [0,1] and send only `0`/`1` for booleans.**
@@ -453,11 +454,12 @@ values first and restored them afterwards; restores were verified against a full
   `SNAPSHOTLIST`, `SETD` with a bogus path — none produced a reply, an error, or a
   re-dump.
 - **No spontaneous re-dumps.** Over 120 s idle, and across 3 connect/disconnect cycles of a
-  second client, zero unsolicited full dumps. The initial dump completes in 0.2–0.55 s and
-  is ~2750 `SETD`/`SETS` lines. One probe run did see dump lines still arriving ~12 s after
-  connect; it did not reproduce in 6 subsequent trials, but ingest should stay idempotent
-  and must not assume the dump is complete after a fixed short wait. soundcraft-ui's
-  "25 ms quiet or 250 ms cap" init heuristic would have misfired on that run.
+  second client, zero unsolicited full dumps arrived. The initial dump completes in
+  0.2–0.55 s and is ~2750 `SETD`/`SETS` lines. One probe run did see dump lines still
+  arriving ~12 s after connect, and it did not reproduce in 6 subsequent trials. Ingest
+  must still stay idempotent, and must never assume the dump is complete after a fixed
+  short wait. soundcraft-ui's "25 ms quiet or 250 ms cap" init heuristic would have
+  misfired on that run.
 - **`var.mtk.present^1` is reported by this Ui16**, which has no multitrack recorder.
   Gate the multitrack parameters on `model`, not on `var.mtk.present`. The
   `var.mtk.rec.*` keys are absent from the Ui16 dump.
@@ -526,8 +528,9 @@ Format: `DECISION: <date> — <topic> — <decision> — <rationale>`
   ever arrive. Rejected alternatives: a second observer WebSocket per device (accurate but
   doubles connections for a mixer that accepts writes unconditionally anyway), and
   periodic full resync (a recurring ~2750-line dump to correct drift that has no known
-  cause). Accepted risk: a write the mixer ignores — malformed value, or a path that does
-  not exist — leaves our current value wrong until an external change corrects it.
+  cause). Accepted risk: a write the mixer ignores leaves our current value wrong until an
+  external change corrects it. That happens on a malformed value or a path that does not
+  exist.
 - DECISION: 2026-08-23 — Recording double-fire guard — Replace the planned
   `var.recBusy`=1 send-suppression with a core-side in-flight guard: after sending
   `RECTOGGLE`, ignore further toggles until `var.isRecording` matches the target or ~2 s

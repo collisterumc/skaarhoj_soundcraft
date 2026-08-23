@@ -22,14 +22,13 @@ Full context for each is in [IMPLEMENTATION.md](IMPLEMENTATION.md) § "Open ques
       `ibeam-core-proto` lack a LICENSE file — implied license only; prefer source-only
       releases and optionally ask SKAARHOJ to add a LICENSE.
 - [x] **On-device deployment — approach set 2026-07-20.** Runs on the Blue Pill. We build
-      the core as a standard `.ipks` (a gzipped opkg/ipk: the arm64 binary at `/usr/bin/<core>`
-      plus a runit service under `/service/pkg/<core>`) and install it through the
-      system-manager local-upload page (`POST /api/install-custom-package`). Working
-      assumption: local
-      upload of a self-built package installs and supervises the core; milestone 7 verifies
-      this on hardware. If it does not, we pause and work with SKAARHOJ to identify the
-      supported path for publishing a third-party core. Format details in IMPLEMENTATION.md
-      §8.
+      the core as a standard `.ipks`, a gzipped opkg/ipk holding the arm64 binary at
+      `/usr/bin/<core>` plus a runit service under `/service/pkg/<core>`. We install it
+      through the system-manager local-upload page (`POST /api/install-custom-package`).
+      Working assumption: that upload installs and supervises a self-built core.
+      Milestone 7 verifies this on hardware. If it fails, we pause and work with SKAARHOJ
+      to identify the supported path for publishing a third-party core. Format details in
+      IMPLEMENTATION.md §8.
 - [x] **Which Ui models to actually test against:** resolved 2026-07-20 — see Decision
       log. Hardware on hand is a **Ui16**; that is the integration-test authority. All
       three models (Ui12, Ui16, Ui24R) are still registered so future users can use the
@@ -70,9 +69,13 @@ Full context for each is in [IMPLEMENTATION.md](IMPLEMENTATION.md) § "Open ques
 - [x] `reference/` excluded from git via `.gitignore`
 - [ ] Verify the rebuilt snapshot matches: `sha256sum -c` against the checksums in the
       README (manuals may differ if updated upstream; clones are commit-pinned)
-- [ ] Install Go toolchain matching `ibeam-corelib-go` requirement (Go ≥ 1.25) in the dev
-      container
-- [ ] Verify the SKAARHOJ template builds unmodified: `cd reference/core-skaarhoj-template && go build ./...`
+- [x] Install Go toolchain matching `ibeam-corelib-go` requirement (Go ≥ 1.25) in the dev
+      container — pinned to 1.25.14 in `.devcontainer/devcontainer.json` via the Go
+      feature, because the devcontainers Go image only publishes up to 1.24
+- [x] Verify the SKAARHOJ template builds: `cd reference/core-skaarhoj-template &&
+      bash injectGitVars.sh && go build ./...`. The `injectGitVars.sh` step is required —
+      it generates `gitinfo.go`, without which `main.go` fails on undefined `gitTag`,
+      `gitBranch` and `gitRevision`
 
 **Gate G1 (agent-assertable):**
 - [ ] `ls reference/soundcraft-ui reference/core-skaarhoj-template reference/ibeam-core-proto reference/ibeam-corelib-go reference/ibeam-lib-config reference/manuals reference/ipks-sample` all exist
@@ -80,8 +83,8 @@ Full context for each is in [IMPLEMENTATION.md](IMPLEMENTATION.md) § "Open ques
 - [ ] `ls reference/manuals/*.pdf | wc -l` == 4 and each file begins with `%PDF`
 - [ ] `ls reference/ipks-sample/*.ipks reference/ipks-sample/*.raucb` both exist
 - [ ] `git check-ignore reference/soundcraft-ui` exits 0
-- [ ] `go version` reports ≥ go1.25
-- [ ] `go build ./...` succeeds in `reference/core-skaarhoj-template`
+- [x] `go version` reports ≥ go1.25
+- [x] `bash injectGitVars.sh && go build ./...` succeeds in `reference/core-skaarhoj-template`
 
 ---
 

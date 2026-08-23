@@ -52,7 +52,19 @@ When counts are necessary, note the date they were captured.
 This is a public repository: keep documentation neutral and don't document internal
 SKAARHOJ details beyond what's needed to build and deploy the core.
 
-## Git
+## Agent team
+
+Three subagents in `.claude/agents/` divide the work. Use them in this order; each is
+scoped deliberately, so don't ask one to do another's job.
+
+| Agent | Use it for |
+|-------|------------|
+| `core-builder` | Writing and changing Go code against one TODO.md item |
+| `adversarial-validator` | Attacking a finished change or claim before a Gate box gets checked |
+| `clarity-reviewer` | Complexity and readability only — it does not hunt for bugs |
+
+Give each one a bounded task, not a whole milestone. `adversarial-validator` is meant to
+run even when the work looks correct; that is the point of it.
 
 ## Git
 

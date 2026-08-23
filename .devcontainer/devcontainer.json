@@ -1,6 +1,9 @@
 {
   "name": "skaarhoj_soundcraft",
-  "image": "mcr.microsoft.com/devcontainers/go:1-1.22-bookworm",
+  // The devcontainers Go image only publishes up to 1.24, but ibeam-corelib-go and the
+  // SKAARHOJ template both require go 1.25.0. Install Go via the feature instead, pinned
+  // to an exact patch so every container gets the same toolchain.
+  "image": "mcr.microsoft.com/devcontainers/base:bookworm",
   "customizations": {
     "vscode": {
       "extensions": [
@@ -9,6 +12,9 @@
     }
   },
   "features": {
-    		"ghcr.io/anthropics/devcontainer-features/claude-code:1": {}
+    "ghcr.io/devcontainers/features/go:1": {
+      "version": "1.25.14"
+    },
+    "ghcr.io/anthropics/devcontainer-features/claude-code:1": {}
   }
 }
