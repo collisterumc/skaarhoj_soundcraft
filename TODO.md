@@ -170,25 +170,34 @@ feedback was proven with a second WebSocket client instead.
 
 ## 4. Feature: channel mute + fader (with feedback)
 
-- [ ] Parameter: `channel_mute` (Binary, ControlStyle Normal, NormalFeedback), dimensioned
+- [x] Parameter: `channel_mute` (Binary, ControlStyle Normal, NormalFeedback), dimensioned
       over channels per model (inputs + line-in, per G0 decision)
-- [ ] Parameter: `channel_fader` (Floating 0.0–1.0, Normal, NormalFeedback,
+- [x] Parameter: `channel_fader` (Floating 0.0–1.0, Normal, NormalFeedback,
       acceptanceThreshold, dB display via displaySuffix + conversion for labels)
-- [ ] Parameter: `master_fader` (`m.mix`; note: no master mute path exists on the mixer)
-- [ ] Outbound: target changes → `SETD^{i|l}.<n>.mute^{0|1}` / `SETD^{i|l}.<n>.mix^<float>`
-- [ ] Inbound: unsolicited `SETD` updates → ingest as current values
-- [ ] Fader value → dB conversion utilities ported from soundcraft-ui (with unit tests
+      — exposes the linear 0–1 value with no dB suffix; a suffix on a linear value would
+      mislead, and corelib cannot re-scale a value for display (Decision log 2026-08-23)
+- [x] Parameter: `master_fader` (`m.mix`; note: no master mute path exists on the mixer)
+- [x] Outbound: target changes → `SETD^{i|l}.<n>.mute^{0|1}` / `SETD^{i|l}.<n>.mix^<float>`
+- [x] Inbound: unsolicited `SETD` updates → ingest as current values
+- [x] Fader value → dB conversion utilities ported from soundcraft-ui (with unit tests
       against the reference vectors listed in IMPLEMENTATION.md)
 
 **Gate G4 (agent-assertable):**
-- [ ] Unit tests: dB↔linear conversion matches reference vectors within 0.05 dB; mute/fader
+- [x] Unit tests: dB↔linear conversion matches reference vectors within 0.05 dB; mute/fader
       path construction matches the exact strings from soundcraft-ui's outbound-messages
-      test suite (sampled ≥ 6 cases)
-- [ ] Integration (real/demo mixer): setting mute from the core changes the mixer web UI
+      test suite (sampled ≥ 6 cases) — 18 vectors generated from the TS implementation and
+      independently recomputed; 12 verbatim spec strings
+- [x] Integration (real/demo mixer): setting mute from the core changes the mixer web UI
       within 250 ms; changing mute in the mixer web UI updates the core's current value
-      (observable in logs / gRPC Subscribe) within 250 ms; same for fader
-- [ ] Feedback loop safety: driving a fader through 100 rapid updates does not produce
+      (observable in logs / gRPC Subscribe) within 250 ms; same for fader — verified
+      2026-08-23 against the Ui16, driving the running core over gRPC: core→mixer observed
+      in 49–174 ms, mixer→core in 30–64 ms. The "web UI" legs were proxied through a
+      second WebSocket client (milestone-2 precedent); one of ten broadcast samples hit
+      358 ms (mixer-side variance). All touched values captured first and restore-verified
+- [x] Feedback loop safety: driving a fader through 100 rapid updates does not produce
       message storms (log assertion: outbound count ≤ inbound-triggered resend threshold)
+      — unit test: exactly 100 SETD for 100 updates, no resends; live via gRPC: corelib
+      coalesced the burst to 2 SETD, no tail traffic
 
 ---
 

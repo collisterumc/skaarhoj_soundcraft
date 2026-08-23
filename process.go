@@ -79,19 +79,36 @@ func buildDevices(r *ib.IBeamParameterRegistry, config CoreConfig, toManager cha
 		if _, err := r.RegisterDevice(dc.DeviceID, dc.ModelID); log.Should(err) {
 			continue
 		}
-		devices[dc.DeviceID] = &device{
-			id:           dc.DeviceID,
-			ip:           dc.IP,
-			dial:         wsDial,
-			timing:       defaultTiming,
-			store:        newStateStore(),
-			connPID:      r.PID("connection"),
-			toManager:    toManager,
-			fromManager:  make(chan *pb.Parameter, 10),
-			wireMessages: defaultWireMessages,
+		ch := modelChannels(dc.ModelID)
+		dev := &device{
+			id:          dc.DeviceID,
+			ip:          dc.IP,
+			dial:        wsDial,
+			timing:      defaultTiming,
+			store:       newStateStore(),
+			connPID:     r.PID("connection"),
+			toManager:   toManager,
+			fromManager: make(chan *pb.Parameter, 10),
+			pids: mixerPIDs{
+				channelMute:  r.PID("channel_mute"),
+				channelFader: r.PID("channel_fader"),
+				masterFader:  r.PID("master_fader"),
+			},
+			inputs: ch.inputs,
+			line:   ch.line,
 		}
+		dev.wireMessages = dev.buildWireMessages
+		devices[dc.DeviceID] = dev
 	}
 	return devices
+}
+
+// mixerPIDs holds the corelib parameter IDs the device loop maps to and from
+// the wire. Resolved once at registration so the hot path never looks them up.
+type mixerPIDs struct {
+	channelMute  uint32
+	channelFader uint32
+	masterFader  uint32
 }
 
 type device struct {
@@ -101,6 +118,9 @@ type device struct {
 	timing       loopTiming
 	store        *stateStore
 	connPID      uint32
+	pids         mixerPIDs
+	inputs       int // input channels; the channel dimension splits i.<n> from l.<n> here
+	line         int // line-in channels; bounds the l.<n> range on inbound paths
 	toManager    chan<- *pb.Parameter
 	fromManager  chan *pb.Parameter           // per-device slice of the manager's output
 	wireMessages func(*pb.Parameter) []string // parameter→protocol translation; a seam like dial
@@ -234,6 +254,11 @@ func (d *device) ingest(line string) bool {
 	switch msg.kind {
 	case "SETD", "SETS":
 		d.store.set(msg.path, msg.value)
+		// Map recognized paths to current values. Inbound traffic never triggers
+		// a wire send — only fromManager writes go out (§2.7).
+		if p := d.inboundParameter(msg.path, msg.value); p != nil {
+			d.toManager <- p
+		}
 		return true
 	}
 	return false
@@ -258,23 +283,25 @@ func (d *device) pumpFromManager(ctx context.Context) {
 				log.Debugf("Device %d: discarding write for parameter %d while disconnected", d.id, param.Id.Parameter)
 				continue
 			}
-			for _, msg := range d.wireMessages(param) {
+			msgs := d.wireMessages(param)
+			for _, msg := range msgs {
 				select {
 				case out <- msg:
 				default:
 					log.Errorf("Device %d: outbound queue full, dropping %q", d.id, msg)
 				}
 			}
+			// Optimistic confirm: the mixer never echoes a write, so feed the
+			// sent value back as current now (Decision 2026-08-23). Confirm
+			// only after a wire message actually went out, so an unmapped
+			// parameter confirms nothing.
+			if len(msgs) > 0 {
+				if confirm := d.confirmWrite(param); confirm != nil {
+					d.toManager <- confirm
+				}
+			}
 		}
 	}
-}
-
-// defaultWireMessages translates a manager parameter into protocol messages.
-// The skeleton registers no controllable parameters, so the real mapping
-// arrives with the mute/fader milestone.
-func defaultWireMessages(param *pb.Parameter) []string {
-	log.Debugf("no wire mapping for parameter %d", param.Id.Parameter)
-	return nil
 }
 
 func (d *device) reportConnection(connected bool) {

@@ -331,8 +331,14 @@ reappearing is **routine**, not an error condition:
 7. **Dynamic element labels** — can channel `elementLabels` update at runtime from
    `i.<n>.name`? Needs corelib verification; fallback = static labels + `channel_name`
    parameter for displays.
-8. **Fader parameter unit** — expose linear 0–1 (simple, matches motorized fader hardware)
-   vs. dB-calibrated float. v1 proposal: linear + dB display suffix.
+8. **Fader parameter unit** — RESOLVED 2026-08-23, see Decision log. The fader parameters
+   expose the linear 0–1 wire value with `displayFloatPrecision` = 3 and **no** dB suffix.
+   A `displaySuffix` of "dB" on a linear value would render misleading numbers (position
+   0.5 is −11.6 dB, not "0.5 dB"), and corelib has no field that converts a stored value
+   into a different display scale. The dB conversion utilities ship and are unit-tested for
+   future label use. **Flagged for owner review:** if a true dB-calibrated fader is wanted,
+   it needs a dB-valued parameter (min −∞/−80, max +10) that converts on both the outbound
+   and inbound edges — a larger change deferred past v1.
 
 ## 8. skaarOS package format (`.ipks`) — reverse-engineered 2026-07-20
 
@@ -546,6 +552,21 @@ Format: `DECISION: <date> — <topic> — <decision> — <rationale>`
   and sends booleans as exactly `0` or `1`. — The mixer does no validation: it stored
   `i.0.mix^1.5`, `^-0.2`, and `i.0.mute^2` verbatim (§9). Nothing downstream would catch
   an out-of-range value, so the core is the only guard.
+- DECISION: 2026-08-23 — Fader parameter unit and dB display — The `channel_fader` and
+  `master_fader` parameters expose the linear 0.0–1.0 wire value directly, with
+  `DisplayFloatPrecision` = ThreeDecimals and no `displaySuffix`. — A "dB" suffix on a
+  linear value shows misleading numbers (position 0.5 reads −11.6 dB), and corelib offers
+  no field that reconverts a stored value into a different display scale; the least
+  misleading supported option is the honest linear readout. The ported dB conversion
+  utilities (`convert.go`) are unit-tested and available for a future dB-calibrated
+  variant, which would require a dB-valued parameter converting on both wire edges.
+  Flagged for owner review.
+- DECISION: 2026-08-23 — Channel dimension encoding — mute/fader register per model via
+  `RegisterParameterForModels`, each with a single channel dimension whose `Count` is
+  inputs+line and whose `ElementLabels` are keyed 1..Count ("IN n"/"LINE n"). — corelib
+  generates 1-based dimension IDs from `Count`; keying the labels 1..Count aligns them with
+  those IDs (`generateDimensions` in `parameter-dimension.go`). Dimension index 1..inputs
+  maps to wire `i.<index-1>`, inputs+1.. maps to `l.<index-inputs-1>`.
 - DECISION: 2026-08-23 — Model and capability detection — Size channel dimensions from the
   `model` state key (`ui16`), never from `type` or `var.mtk.present`. — On the test Ui16,
   `type` reads `8ch` (which is not the input count) and `var.mtk.present` reads `1`

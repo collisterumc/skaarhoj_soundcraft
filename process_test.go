@@ -132,12 +132,12 @@ func newTestDevice(t *testing.T, dial dialFunc, mutate ...func(*device)) (*devic
 			alivePeriod:  5 * time.Millisecond,
 			readDeadline: 50 * time.Millisecond,
 		},
-		store:        newStateStore(),
-		connPID:      testConnPID,
-		toManager:    toManager,
-		fromManager:  fromManager,
-		wireMessages: defaultWireMessages,
+		store:       newStateStore(),
+		connPID:     testConnPID,
+		toManager:   toManager,
+		fromManager: fromManager,
 	}
+	dev.wireMessages = dev.buildWireMessages
 	for _, m := range mutate {
 		m(dev)
 	}
@@ -174,6 +174,162 @@ func waitFor(t *testing.T, what string, cond func() bool) {
 		time.Sleep(2 * time.Millisecond)
 	}
 	t.Fatalf("timed out waiting for %s", what)
+}
+
+// withRealWireMapping configures a test device with the real PIDs and mapping
+// functions so the loop exercises buildWireMessages and confirmWrite.
+func withRealWireMapping(t *testing.T) func(*device) {
+	t.Helper()
+	r := testRegistry(t)
+	return func(d *device) {
+		d.inputs = 12 // Ui16
+		d.line = 2
+		d.pids = mixerPIDs{
+			channelMute:  r.PID("channel_mute"),
+			channelFader: r.PID("channel_fader"),
+			masterFader:  r.PID("master_fader"),
+		}
+	}
+}
+
+// drainToManager empties toManager until stop is closed, so a full buffer never
+// blocks the device loop during a test that does not inspect the confirms.
+func drainToManager(toManager <-chan *pb.Parameter, stop <-chan struct{}) {
+	go func() {
+		for {
+			select {
+			case <-stop:
+				return
+			case <-toManager:
+			}
+		}
+	}()
+}
+
+// TestFeedbackLoopSafety drives one fader through 100 rapid updates and asserts
+// the outbound count stays bounded: exactly one SETD per update, and no extra
+// sends triggered by inbound traffic (§2.7 rule 1). The mock never echoes.
+func TestFeedbackLoopSafety(t *testing.T) {
+	dialer := newMockDialer()
+	dev, fromManager, toManager := newTestDevice(t, dialer.dial, withRealWireMapping(t))
+
+	conn := newMockConn()
+	dialer.queueConn(conn)
+	awaitConnection(t, toManager, true)
+	// Drain connection updates so the toManager buffer never blocks the loop.
+	stop := make(chan struct{})
+	defer close(stop)
+	drainToManager(toManager, stop)
+
+	const updates = 100
+	for i := 0; i < updates; i++ {
+		fromManager <- b.Param(dev.pids.channelFader, dev.id, b.Float(float64(i)/updates, 3))
+	}
+
+	waitFor(t, "all fader writes on the wire", func() bool {
+		return countSETD(conn.written(), "SETD^i.2.mix^") == updates
+	})
+	// Give any stray resend a chance to appear, then confirm the count held.
+	time.Sleep(30 * time.Millisecond)
+	if got := countSETD(conn.written(), "SETD^i.2.mix^"); got != updates {
+		t.Errorf("fader SETD count = %d, want exactly %d (no inbound-triggered resends)", got, updates)
+	}
+	// No other SETD paths were emitted.
+	if got := countSETD(conn.written(), "SETD^"); got != updates {
+		t.Errorf("total SETD count = %d, want %d", got, updates)
+	}
+}
+
+// TestOptimisticConfirm asserts that after an outbound write the sent value is
+// reported to toManager as current, with no echo from the mock (§2.7).
+func TestOptimisticConfirm(t *testing.T) {
+	dialer := newMockDialer()
+	dev, fromManager, toManager := newTestDevice(t, dialer.dial, withRealWireMapping(t))
+
+	conn := newMockConn()
+	dialer.queueConn(conn)
+	awaitConnection(t, toManager, true)
+
+	fromManager <- b.Param(dev.pids.channelMute, dev.id, b.Bool(true, 3))
+
+	// The confirm arrives on toManager as the mute parameter, dimension 3, true.
+	deadline := time.After(2 * time.Second)
+	for {
+		select {
+		case p := <-toManager:
+			if p.Id.Parameter != dev.pids.channelMute {
+				continue
+			}
+			if len(p.Value) != 1 || len(p.Value[0].DimensionID) != 1 || p.Value[0].DimensionID[0] != 3 {
+				t.Fatalf("confirm dimension = %v, want [3]", p.Value[0].DimensionID)
+			}
+			if !p.Value[0].GetBinary() {
+				t.Fatalf("confirm value = false, want true")
+			}
+			// The wire got the write; the mock did not echo it back into the store.
+			waitFor(t, "wire write", func() bool {
+				return countSETD(conn.written(), "SETD^i.2.mute^1") == 1
+			})
+			if _, ok := dev.store.get("i.2.mute"); ok {
+				t.Error("store has i.2.mute — mock must not echo the write")
+			}
+			return
+		case <-deadline:
+			t.Fatal("timed out waiting for optimistic confirm")
+		}
+	}
+}
+
+// TestInboundForwardsToManager pushes SETD lines through the session and asserts
+// they reach toManager mapped to the right parameter and dimension, and that no
+// wire message results (inbound never triggers a send).
+func TestInboundForwardsToManager(t *testing.T) {
+	dialer := newMockDialer()
+	dev, _, toManager := newTestDevice(t, dialer.dial, withRealWireMapping(t))
+
+	conn := newMockConn()
+	dialer.queueConn(conn)
+	awaitConnection(t, toManager, true)
+
+	conn.frames <- "3:::SETD^i.0.mute^1\nSETD^l.0.mix^0.5\nSETD^m.mix^0.7"
+
+	want := map[uint32][]uint32{
+		dev.pids.channelMute:  {1},
+		dev.pids.channelFader: {13},
+		dev.pids.masterFader:  nil,
+	}
+	seen := map[uint32]bool{}
+	deadline := time.After(2 * time.Second)
+	for len(seen) < len(want) {
+		select {
+		case p := <-toManager:
+			dims, ok := want[p.Id.Parameter]
+			if !ok {
+				continue
+			}
+			if !dimEqual(p.Value[0].DimensionID, dims) {
+				t.Errorf("parameter %d dimension = %v, want %v", p.Id.Parameter, p.Value[0].DimensionID, dims)
+			}
+			seen[p.Id.Parameter] = true
+		case <-deadline:
+			t.Fatalf("timed out; saw %v of %v mapped parameters", len(seen), len(want))
+		}
+	}
+
+	// Inbound traffic must not produce any outbound SETD.
+	if got := countSETD(conn.written(), "SETD^"); got != 0 {
+		t.Errorf("inbound produced %d outbound SETD frames, want 0", got)
+	}
+}
+
+func countSETD(writes []string, prefix string) int {
+	n := 0
+	for _, w := range writes {
+		if strings.HasPrefix(w, "3:::"+prefix) {
+			n++
+		}
+	}
+	return n
 }
 
 func TestReconnectStateMachine(t *testing.T) {
