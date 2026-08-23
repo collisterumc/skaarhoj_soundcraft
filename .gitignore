@@ -7,3 +7,6 @@ reference/
 
 # Config dir the corelib creates when run without IBEAM_CONFIG_DIR
 skaarhoj_soundcraft-storage/
+
+# Scratch worktrees Claude Code creates for isolated agent runs
+.claude/worktrees/
