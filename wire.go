@@ -41,10 +41,8 @@ func (d *device) buildWireMessages(param *pb.Parameter) []string {
 		switch param.Id.Parameter {
 		case d.pids.channelMute:
 			msgs = append(msgs, "SETD^"+path+".mute^"+boolWire(v.GetBinary()))
-		case d.pids.channelFader:
-			msgs = append(msgs, "SETD^"+path+".mix^"+floatWire(v.GetFloating()))
-		case d.pids.masterFader:
-			msgs = append(msgs, "SETD^"+path+".mix^"+floatWire(v.GetFloating()))
+		case d.pids.channelFader, d.pids.masterFader:
+			msgs = append(msgs, "SETD^"+path+".mix^"+floatWire(scaleToWire(v.GetFloating())))
 		}
 	}
 	if len(msgs) == 0 {
@@ -115,51 +113,71 @@ func channelPath(dim, inputs int) (string, bool) {
 	return "l." + strconv.Itoa(dim-inputs-1), true
 }
 
-// confirmWrite returns the optimistic-confirm parameter for a fromManager
+// confirmWrite returns the optimistic-confirm parameters for a fromManager
 // write: the sent value fed straight back as current. The mixer never echoes a
-// write, so waiting for feedback would leave the value assumed forever.
-// Returns nil for parameters with no wire mapping.
-func (d *device) confirmWrite(param *pb.Parameter) *pb.Parameter {
+// write, so waiting for feedback would leave the value assumed forever. A fader
+// write also emits its paired dB display parameter. Returns nil for parameters
+// with no wire mapping.
+func (d *device) confirmWrite(param *pb.Parameter) []*pb.Parameter {
 	switch param.Id.Parameter {
-	case d.pids.channelMute, d.pids.channelFader, d.pids.masterFader:
-	default:
-		return nil
-	}
-	vals := make([]*pb.ParameterValue, 0, len(param.Value))
-	for _, v := range param.Value {
-		switch param.Id.Parameter {
-		case d.pids.channelMute:
+	case d.pids.channelMute:
+		vals := make([]*pb.ParameterValue, 0, len(param.Value))
+		for _, v := range param.Value {
 			vals = append(vals, b.Bool(v.GetBinary(), v.DimensionID...))
-		case d.pids.channelFader, d.pids.masterFader:
-			vals = append(vals, b.Float(clampUnit(v.GetFloating()), v.DimensionID...))
 		}
+		if len(vals) == 0 {
+			return nil
+		}
+		return []*pb.Parameter{b.Param(param.Id.Parameter, d.id, vals...)}
+	case d.pids.channelFader:
+		return d.faderConfirm(param, d.pids.channelFader, d.pids.channelFaderDB)
+	case d.pids.masterFader:
+		return d.faderConfirm(param, d.pids.masterFader, d.pids.masterFaderDB)
 	}
-	if len(vals) == 0 {
-		return nil
-	}
-	return b.Param(param.Id.Parameter, d.id, vals...)
+	return nil
 }
 
-// inboundParameter maps a recognized SETD path to a toManager current value.
-// It handles m.mix and {i|l}.<n>.{mute|mix}; every other path returns nil so
-// the store keeps it but nothing forwards it.
-func (d *device) inboundParameter(path, value string) *pb.Parameter {
+// faderConfirm builds the paired fader and dB parameters for an optimistic
+// confirm. The fader current value is the sent 0–100 value clamped; the dB
+// reading is computed from the linear wire value (0–100 → 0.0–1.0).
+func (d *device) faderConfirm(param *pb.Parameter, faderPID, dbPID uint32) []*pb.Parameter {
+	faderVals := make([]*pb.ParameterValue, 0, len(param.Value))
+	dbVals := make([]*pb.ParameterValue, 0, len(param.Value))
+	for _, v := range param.Value {
+		scaled := clampFader(v.GetFloating())
+		faderVals = append(faderVals, b.Float(scaled, v.DimensionID...))
+		dbVals = append(dbVals, b.String(faderDBText(scaleToWire(scaled)), v.DimensionID...))
+	}
+	if len(faderVals) == 0 {
+		return nil
+	}
+	return []*pb.Parameter{
+		b.Param(faderPID, d.id, faderVals...),
+		b.Param(dbPID, d.id, dbVals...),
+	}
+}
+
+// inboundParameter maps a recognized SETD path to toManager current values.
+// It handles m.mix and {i|l}.<n>.{mute|mix}; a fader path also produces its dB
+// display companion. Every other path returns nil so the store keeps it but
+// nothing forwards it.
+func (d *device) inboundParameter(path, value string) []*pb.Parameter {
 	if path == "m.mix" {
 		f, ok := parseFloat(value)
 		if !ok {
 			return nil
 		}
-		return b.Param(d.pids.masterFader, d.id, b.Float(clampUnit(f)))
+		return d.faderInbound(f, d.pids.masterFader, d.pids.masterFaderDB)
 	}
 	// The display shows the snapshot name alone: a small panel has one line, and
 	// the operator steps snapshots, not shows. var.currentSnapshot covers both
 	// the initial dump and mixer-side loads (both arrive as this SETS).
 	if path == "var.currentSnapshot" {
-		return b.Param(d.pids.currentSnapshot, d.id, b.String(value))
+		return []*pb.Parameter{b.Param(d.pids.currentSnapshot, d.id, b.String(value))}
 	}
 
 	if p := d.recordInbound(path, value); p != nil {
-		return p
+		return []*pb.Parameter{p}
 	}
 
 	typ, rest, ok := strings.Cut(path, ".")
@@ -185,15 +203,26 @@ func (d *device) inboundParameter(path, value string) *pb.Parameter {
 		if !ok {
 			return nil
 		}
-		return b.Param(d.pids.channelMute, d.id, b.Bool(on, dim))
+		return []*pb.Parameter{b.Param(d.pids.channelMute, d.id, b.Bool(on, dim))}
 	case "mix":
 		f, ok := parseFloat(value)
 		if !ok {
 			return nil
 		}
-		return b.Param(d.pids.channelFader, d.id, b.Float(clampUnit(f), dim))
+		return d.faderInbound(f, d.pids.channelFader, d.pids.channelFaderDB, dim)
 	}
 	return nil
+}
+
+// faderInbound builds the paired fader and dB parameters from an inbound linear
+// wire value. The fader current value is scaled 0.0–1.0 → 0–100; the dB reading
+// comes from the clamped linear value.
+func (d *device) faderInbound(wire float64, faderPID, dbPID uint32, dim ...uint32) []*pb.Parameter {
+	w := clampUnit(wire)
+	return []*pb.Parameter{
+		b.Param(faderPID, d.id, b.Float(scaleFromWire(w), dim...)),
+		b.Param(dbPID, d.id, b.String(faderDBText(w), dim...)),
+	}
 }
 
 // recordInbound maps the recording state keys to their current values. It also
@@ -296,9 +325,9 @@ func floatWire(v float64) string {
 	return strconv.FormatFloat(clampUnit(v), 'f', -1, 64)
 }
 
-// clampUnit clamps to [0,1] and maps a non-finite value to 0, so NaN can never
-// reach the wire (neither the mixer nor corelib rejects "NaN"). v <= 0 also
-// normalizes -0.0, which would otherwise render as "-0".
+// clampUnit clamps to [0,1]. NaN and v <= 0 (including -Inf and -0.0) map to 0,
+// so NaN can never reach the wire (neither the mixer nor corelib rejects "NaN")
+// and -0.0 never renders as "-0"; +Inf clamps to 1.
 func clampUnit(v float64) float64 {
 	if math.IsNaN(v) || v <= 0 {
 		return 0
@@ -307,4 +336,40 @@ func clampUnit(v float64) float64 {
 		return 1
 	}
 	return v
+}
+
+// scaleToWire converts a 0–100 fader value to the linear 0.0–1.0 wire scale.
+// clampUnit downstream clamps the result and maps any non-finite input to a
+// safe wire value.
+func scaleToWire(v float64) float64 {
+	return v / 100
+}
+
+// scaleFromWire converts a linear 0.0–1.0 wire value to the 0–100 fader scale.
+func scaleFromWire(w float64) float64 {
+	return w * 100
+}
+
+// clampFader clamps a 0–100 fader value to [0,100]. NaN and v <= 0 (including
+// -Inf) map to 0 and +Inf clamps to 100, so an optimistic confirm never feeds
+// back an out-of-range or NaN value.
+func clampFader(v float64) float64 {
+	if math.IsNaN(v) || v <= 0 {
+		return 0
+	}
+	if v > 100 {
+		return 100
+	}
+	return v
+}
+
+// faderDBText renders a linear 0.0–1.0 wire value as a dB display string, one
+// decimal (e.g. "-11.6 dB", "10.0 dB"). Negligible amplitude reads "-inf dB".
+// No leading "+" above 0 dB, matching the mixer's own web UI.
+func faderDBText(wire float64) string {
+	db := faderValueToDB(wire)
+	if math.IsInf(db, -1) {
+		return "-inf dB"
+	}
+	return strconv.FormatFloat(db, 'f', 1, 64) + " dB"
 }

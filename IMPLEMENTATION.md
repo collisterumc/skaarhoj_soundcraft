@@ -116,8 +116,9 @@ ships exact conversion code in
 Port these to Go verbatim; generate reference vectors from the TS implementation for unit
 tests (e.g. positions 0.0, 0.055, 0.1 … 1.0 and dB −80, −40, −20, −10, 0, +10).
 
-For v1 the core can expose the raw 0.0–1.0 float to Reactor (Floating parameter) and use
-the dB conversion only for display labels; a dB-calibrated parameter variant is a stretch.
+The fader parameters present a 0–100 linear-tick float to Reactor and pair with a read-only
+String companion carrying the dB reading (Decision log "Fader 0–100 scale and paired dB
+display"). The wire stays linear 0.0–1.0 (value/100).
 
 ### 2.6 Model differences (device-capabilities.ts)
 
@@ -192,8 +193,8 @@ Consequences:
     Oneshot, FeedbackStyle NoFeedback; payload helper `Trigger()`.
   - **Toggle w/ feedback** (mute, record): ValueType Binary, ControlStyle Normal,
     NormalFeedback.
-  - **Fader**: ValueType Floating, min 0 max 1, ControlStyle Normal, NormalFeedback,
-    acceptanceThreshold ~0.001, fine/coarse steps.
+  - **Fader**: ValueType Floating, min 0 max 100 (linear tick), ControlStyle Normal,
+    NormalFeedback, acceptanceThreshold 0.1, fine/coarse steps, paired dB display companion.
   - **Read-only display** (current snapshot name, rec time): ControlStyle NoControl,
     ValueType String, `RecommendedParamForTextDisplay`.
     (The framework does offer dynamic Opt lists, via `optionListIsDynamic` and
@@ -211,8 +212,10 @@ Consequences:
 |---|---|---|---|---|
 | 1 | `connection` | Binary, GenericType ConnectionState | device | WS connect/disconnect state |
 | 2 | `channel_mute` | Binary, Normal, feedback | channel (model-sized: inputs + line) | `{i\|l}.<n>.mute` |
-| 3 | `channel_fader` | Floating 0–1, Normal, feedback | channel (same) | `{i\|l}.<n>.mix` |
-| 4 | `master_fader` | Floating 0–1, Normal, feedback | — | `m.mix` (no master mute path exists; `m.dim` out of scope) |
+| 3 | `channel_fader` | Floating 0–100 (linear tick), Normal, feedback | channel (same) | `{i\|l}.<n>.mix` (wire linear 0.0–1.0 = value/100) |
+| 3a | `channel_fader_db` | String, NoControl, feedback | channel (same) | dB reading of `channel_fader` (display companion) |
+| 4 | `master_fader` | Floating 0–100 (linear tick), Normal, feedback | — | `m.mix` (wire = value/100; no master mute path; `m.dim` out of scope) |
+| 4a | `master_fader_db` | String, NoControl, feedback | — | dB reading of `master_fader` (display companion) |
 | 5 | `snapshot_up` | NoValue, Oneshot | — | `LOADSNAPSHOT^show^<next snap in cached list>` |
 | 6 | `snapshot_down` | NoValue, Oneshot | — | `LOADSNAPSHOT^show^<prev snap in cached list>` |
 | 7 | `current_snapshot` | String, NoControl | — | `var.currentShow` + `var.currentSnapshot` |
@@ -336,14 +339,14 @@ reappearing is **routine**, not an error condition:
 7. **Dynamic element labels** — can channel `elementLabels` update at runtime from
    `i.<n>.name`? Needs corelib verification; fallback = static labels + `channel_name`
    parameter for displays.
-8. **Fader parameter unit** — RESOLVED 2026-08-23, see Decision log. The fader parameters
-   expose the linear 0–1 wire value with `displayFloatPrecision` = 3 and **no** dB suffix.
-   A `displaySuffix` of "dB" on a linear value would render misleading numbers (position
-   0.5 is −11.6 dB, not "0.5 dB"), and corelib has no field that converts a stored value
-   into a different display scale. The dB conversion utilities ship and are unit-tested for
-   future label use. **Flagged for owner review:** if a true dB-calibrated fader is wanted,
-   it needs a dB-valued parameter (min −∞/−80, max +10) that converts on both the outbound
-   and inbound edges — a larger change deferred past v1.
+8. **Fader parameter unit** — RESOLVED 2026-08-23, see the Decision log entry "Fader 0–100
+   scale and paired dB display". The fader parameters present a 0–100 linear-tick value
+   (`displayFloatPrecision` = OneDecimal); the wire stays linear 0.0–1.0 (value/100). Each
+   fader pairs with a read-only String companion (`channel_fader_db` / `master_fader_db`)
+   that shows the dB reading and is the fader's `RecommendedParamForTextDisplay`. The core
+   emits the companion wherever the fader current value changes (inbound mix updates and the
+   optimistic confirm). This superseded an earlier resolution that exposed the raw 0.0–1.0
+   value with no dB display.
 
 ## 8. skaarOS package format (`.ipks`) — reverse-engineered 2026-07-20
 
@@ -557,7 +560,8 @@ Format: `DECISION: <date> — <topic> — <decision> — <rationale>`
   and sends booleans as exactly `0` or `1`. — The mixer does no validation: it stored
   `i.0.mix^1.5`, `^-0.2`, and `i.0.mute^2` verbatim (§9). Nothing downstream would catch
   an out-of-range value, so the core is the only guard.
-- DECISION: 2026-08-23 — Fader parameter unit and dB display — The `channel_fader` and
+- DECISION: 2026-08-23 — Fader parameter unit and dB display — SUPERSEDED by the
+  2026-08-23 "Fader 0–100 scale and paired dB display" entry below. The `channel_fader` and
   `master_fader` parameters expose the linear 0.0–1.0 wire value directly, with
   `DisplayFloatPrecision` = ThreeDecimals and no `displaySuffix`. — A "dB" suffix on a
   linear value shows misleading numbers (position 0.5 reads −11.6 dB), and corelib offers
@@ -566,6 +570,30 @@ Format: `DECISION: <date> — <topic> — <decision> — <rationale>`
   utilities (`convert.go`) are unit-tested and available for a future dB-calibrated
   variant, which would require a dB-valued parameter converting on both wire edges.
   Flagged for owner review.
+- DECISION: 2026-08-23 — Fader 0–100 scale and paired dB display — `channel_fader` and
+  `master_fader` present a 0–100 linear-tick value (Minimum 0, Maximum 100,
+  `DisplayFloatPrecision` = OneDecimal, FineSteps 0.5, CoarseSteps 5, AcceptanceThreshold
+  0.1). The wire stays linear 0.0–1.0: the wire layer divides by 100 outbound and
+  multiplies by 100 inbound (`scaleToWire`/`clampScale` in `wire.go`), and the optimistic
+  confirm feeds back the 0–100 value. Two new read-only String parameters,
+  `channel_fader_db` and `master_fader_db`, carry the dB reading (`faderValueToDB` of the
+  linear wire value, formatted one decimal, e.g. `-11.6 dB`); `RecommendedParamForTextDisplay`
+  points each fader at its dB companion. The core emits the paired dB parameter everywhere
+  the fader current value changes: inbound `{i|l}.<n>.mix` / `m.mix` and the optimistic
+  confirm after our own writes. — Supersedes the linear-0.0–1.0 readout: three decimals is
+  not human-friendly, and the owner wants the tick to move linearly while the display shows
+  dB. `InputCurveExpo` is left unset (linear ticks, owner's explicit choice). Conventions
+  recorded for owner review: above 0 dB the reading is unsigned (`10.0 dB`, no leading `+`),
+  matching the mixer's own web UI; negligible amplitude renders `-inf dB`. Known limit:
+  dividing a 0–100 value by 100 often lengthens the wire decimal — not just for long
+  mantissas (49.333689429/100 = 0.49333689429000005) but for plain one-decimal values too
+  (33.3/100 = 0.33299999999999996). The mixer accepts long decimals verbatim (§9), so this
+  is cosmetic on the wire, but a value no longer reproduces a reference spec string exactly;
+  round values (40 → 0.4, 80 → 0.8) stay short. `channel_fader_db` shares `channel_fader`'s per-model channel dimension so
+  each channel pairs with its own reading; corelib validation resolves the
+  `RecommendedParamForTextDisplay` reference by name only and does not check that both sides
+  share a dimension, so Reactor's per-element pairing of a dimensioned text-display
+  reference is unverified against hardware/Reactor and flagged for owner review.
 - DECISION: 2026-08-23 — Channel dimension encoding — mute/fader register per model via
   `RegisterParameterForModels`, each with a single channel dimension whose `Count` is
   inputs+line and whose `ElementLabels` are keyed 1..Count ("IN n"/"LINE n"). — corelib

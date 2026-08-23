@@ -106,26 +106,45 @@ func configureParameters(r *ib.IBeamParameterRegistry) {
 			Dimensions:     []*pb.DimensionDetail{dim},
 		})
 
+		// channel_fader_db is the read-only dB companion to channel_fader: the
+		// display shows dB while the tick moves on the linear 0–100 scale. It shares
+		// channel_fader's per-model channel dimension so each channel pairs with its
+		// own reading. Registered before channel_fader references it.
+		r.RegisterParameterForModels([]uint32{m.id}, &pb.ParameterDetail{
+			Path:          "mix",
+			Name:          "channel_fader_db",
+			Label:         "Channel Fader (dB)",
+			ShortLabel:    "Fader dB",
+			Description:   "Channel master-mix fader reading in dB (read-only display of channel_fader)",
+			ControlStyle:  pb.ControlStyle_NoControl,
+			FeedbackStyle: pb.FeedbackStyle_NormalFeedback,
+			ValueType:     pb.ValueType_String,
+			DefaultValue:  b.String(""),
+			Dimensions:    []*pb.DimensionDetail{dim},
+		}, ib.WithDefaultValid())
+
 		r.RegisterParameterForModels([]uint32{m.id}, &pb.ParameterDetail{
 			Path:          "mix",
 			Name:          "channel_fader",
 			Label:         "Channel Fader",
 			ShortLabel:    "Fader",
-			Description:   "Master-mix fader level for input and line-in channels (linear 0.0–1.0)",
+			Description:   "Master-mix fader level for input and line-in channels (0–100, linear tick)",
 			ControlStyle:  pb.ControlStyle_Normal,
 			FeedbackStyle: pb.FeedbackStyle_NormalFeedback,
 			ValueType:     pb.ValueType_Floating,
 			Minimum:       0,
-			Maximum:       1,
-			// Other clients push floats at ~9 decimals; the threshold clears our
-			// assumed state on a matching push.
-			AcceptanceThreshold:   0.001,
-			FineSteps:             0.005,
-			CoarseSteps:           0.05,
-			DisplayFloatPrecision: pb.FloatPrecision_ThreeDecimals,
-			RetryCount:            2,
-			ControlDelayMs:        50,
-			Dimensions:            []*pb.DimensionDetail{dim},
+			Maximum:       100,
+			// Other clients push floats at ~9 decimals; on the 0–100 scale a matching
+			// push lands within 0.1, so the threshold clears our assumed state.
+			AcceptanceThreshold: 0.1,
+			FineSteps:           0.5,
+			CoarseSteps:         5,
+			// One decimal because the tick moves on the linear 0–100 scale.
+			DisplayFloatPrecision:          pb.FloatPrecision_OneDecimal,
+			RecommendedParamForTextDisplay: "channel_fader_db",
+			RetryCount:                     2,
+			ControlDelayMs:                 50,
+			Dimensions:                     []*pb.DimensionDetail{dim},
 		})
 	}
 
@@ -164,24 +183,40 @@ func configureParameters(r *ib.IBeamParameterRegistry) {
 		})
 	}
 
+	// master_fader_db is the read-only dB companion to master_fader. Registered
+	// before master_fader references it.
+	r.RegisterParameter(&pb.ParameterDetail{
+		Path:          "mix",
+		Name:          "master_fader_db",
+		Label:         "Master Fader (dB)",
+		ShortLabel:    "Master dB",
+		Description:   "Master output fader reading in dB (read-only display of master_fader)",
+		ControlStyle:  pb.ControlStyle_NoControl,
+		FeedbackStyle: pb.FeedbackStyle_NormalFeedback,
+		ValueType:     pb.ValueType_String,
+		DefaultValue:  b.String(""),
+	}, ib.WithDefaultValid())
+
 	// master_fader has no dimension; it maps to the single m.mix path.
 	r.RegisterParameter(&pb.ParameterDetail{
-		Path:                  "mix",
-		Name:                  "master_fader",
-		Label:                 "Master Fader",
-		ShortLabel:            "Master",
-		Description:           "Master output fader level (linear 0.0–1.0). The mixer exposes no master mute path.",
-		ControlStyle:          pb.ControlStyle_Normal,
-		FeedbackStyle:         pb.FeedbackStyle_NormalFeedback,
-		ValueType:             pb.ValueType_Floating,
-		Minimum:               0,
-		Maximum:               1,
-		AcceptanceThreshold:   0.001,
-		FineSteps:             0.005,
-		CoarseSteps:           0.05,
-		DisplayFloatPrecision: pb.FloatPrecision_ThreeDecimals,
-		RetryCount:            2,
-		ControlDelayMs:        50,
+		Path:                "mix",
+		Name:                "master_fader",
+		Label:               "Master Fader",
+		ShortLabel:          "Master",
+		Description:         "Master output fader level (0–100, linear tick). The mixer exposes no master mute path.",
+		ControlStyle:        pb.ControlStyle_Normal,
+		FeedbackStyle:       pb.FeedbackStyle_NormalFeedback,
+		ValueType:           pb.ValueType_Floating,
+		Minimum:             0,
+		Maximum:             100,
+		AcceptanceThreshold: 0.1,
+		FineSteps:           0.5,
+		CoarseSteps:         5,
+		// One decimal because the tick moves on the linear 0–100 scale.
+		DisplayFloatPrecision:          pb.FloatPrecision_OneDecimal,
+		RecommendedParamForTextDisplay: "master_fader_db",
+		RetryCount:                     2,
+		ControlDelayMs:                 50,
 	})
 
 	configureRecordingParameters(r)

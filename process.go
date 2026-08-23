@@ -93,7 +93,9 @@ func buildDevices(r *ib.IBeamParameterRegistry, config CoreConfig, toManager cha
 			pids: mixerPIDs{
 				channelMute:      r.PID("channel_mute"),
 				channelFader:     r.PID("channel_fader"),
+				channelFaderDB:   r.PID("channel_fader_db"),
 				masterFader:      r.PID("master_fader"),
+				masterFaderDB:    r.PID("master_fader_db"),
 				snapshotUp:       r.PID("snapshot_up"),
 				snapshotDown:     r.PID("snapshot_down"),
 				currentSnapshot:  r.PID("current_snapshot"),
@@ -119,7 +121,9 @@ func buildDevices(r *ib.IBeamParameterRegistry, config CoreConfig, toManager cha
 type mixerPIDs struct {
 	channelMute     uint32
 	channelFader    uint32
+	channelFaderDB  uint32
 	masterFader     uint32
+	masterFaderDB   uint32
 	snapshotUp      uint32
 	snapshotDown    uint32
 	currentSnapshot uint32
@@ -332,7 +336,7 @@ func (d *device) ingest(line string) bool {
 		d.store.set(msg.path, msg.value)
 		// Map recognized paths to current values. Inbound traffic never triggers
 		// a wire send — only fromManager writes go out.
-		if p := d.inboundParameter(msg.path, msg.value); p != nil {
+		for _, p := range d.inboundParameter(msg.path, msg.value) {
 			d.toManager <- p
 		}
 		return true
@@ -392,7 +396,7 @@ func (d *device) pumpFromManager(ctx context.Context) {
 			// only after a wire message actually went out, so an unmapped
 			// parameter confirms nothing.
 			if len(msgs) > 0 {
-				if confirm := d.confirmWrite(param); confirm != nil {
+				for _, confirm := range d.confirmWrite(param) {
 					d.toManager <- confirm
 				}
 			}

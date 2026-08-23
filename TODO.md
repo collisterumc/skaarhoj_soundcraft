@@ -172,11 +172,14 @@ feedback was proven with a second WebSocket client instead.
 
 - [x] Parameter: `channel_mute` (Binary, ControlStyle Normal, NormalFeedback), dimensioned
       over channels per model (inputs + line-in, per G0 decision)
-- [x] Parameter: `channel_fader` (Floating 0.0–1.0, Normal, NormalFeedback,
+- [x] Parameter: `channel_fader` (Floating 0–100 linear-tick, Normal, NormalFeedback,
       acceptanceThreshold, dB display via displaySuffix + conversion for labels)
-      — exposes the linear 0–1 value with no dB suffix; a suffix on a linear value would
-      mislead, and corelib cannot re-scale a value for display (Decision log 2026-08-23)
-- [x] Parameter: `master_fader` (`m.mix`; note: no master mute path exists on the mixer)
+      — value is 0–100 with a linear tick; the wire stays linear 0.0–1.0 (value/100).
+      A read-only `channel_fader_db` String companion carries the dB reading and is the
+      fader's RecommendedParamForTextDisplay (Decision log 2026-08-23, superseding the
+      earlier linear-0.0–1.0 readout)
+- [x] Parameter: `master_fader` (`m.mix`; note: no master mute path exists on the mixer),
+      plus its read-only `master_fader_db` String display companion
 - [x] Outbound: target changes → `SETD^{i|l}.<n>.mute^{0|1}` / `SETD^{i|l}.<n>.mix^<float>`
 - [x] Inbound: unsolicited `SETD` updates → ingest as current values
 - [x] Fader value → dB conversion utilities ported from soundcraft-ui (with unit tests

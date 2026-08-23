@@ -190,7 +190,9 @@ func withRealWireMapping(t *testing.T) func(*device) {
 		d.pids = mixerPIDs{
 			channelMute:     r.PID("channel_mute"),
 			channelFader:    r.PID("channel_fader"),
+			channelFaderDB:  r.PID("channel_fader_db"),
 			masterFader:     r.PID("master_fader"),
+			masterFaderDB:   r.PID("master_fader_db"),
 			snapshotUp:      r.PID("snapshot_up"),
 			snapshotDown:    r.PID("snapshot_down"),
 			currentSnapshot: r.PID("current_snapshot"),
@@ -288,6 +290,42 @@ func TestOptimisticConfirm(t *testing.T) {
 			return
 		case <-deadline:
 			t.Fatal("timed out waiting for optimistic confirm")
+		}
+	}
+}
+
+// TestOptimisticConfirmFaderDB asserts a fader write produces both the 0–100
+// fader current value and its paired dB display parameter on toManager, with the
+// right dimension and formatted text (fader 50 → -11.6 dB).
+func TestOptimisticConfirmFaderDB(t *testing.T) {
+	dialer := newMockDialer()
+	dev, fromManager, toManager := newTestDevice(t, dialer.dial, withRealWireMapping(t))
+
+	conn := newMockConn()
+	dialer.queueConn(conn)
+	awaitConnection(t, toManager, true)
+
+	fromManager <- b.Param(dev.pids.channelFader, dev.id, b.Float(50, 3))
+
+	var sawFader, sawDB bool
+	deadline := time.After(2 * time.Second)
+	for !(sawFader && sawDB) {
+		select {
+		case p := <-toManager:
+			switch p.Id.Parameter {
+			case dev.pids.channelFader:
+				if p.Value[0].DimensionID[0] != 3 || p.Value[0].GetFloating() != 50 {
+					t.Fatalf("fader confirm = %+v, want dim 3 value 50", p.Value[0])
+				}
+				sawFader = true
+			case dev.pids.channelFaderDB:
+				if p.Value[0].DimensionID[0] != 3 || p.Value[0].GetStr() != "-11.6 dB" {
+					t.Fatalf("db confirm = %+v, want dim 3 \"-11.6 dB\"", p.Value[0])
+				}
+				sawDB = true
+			}
+		case <-deadline:
+			t.Fatalf("timed out; sawFader=%v sawDB=%v", sawFader, sawDB)
 		}
 	}
 }

@@ -38,7 +38,9 @@ func wireTestDevice(t *testing.T) *device {
 		pids: mixerPIDs{
 			channelMute:      r.PID("channel_mute"),
 			channelFader:     r.PID("channel_fader"),
+			channelFaderDB:   r.PID("channel_fader_db"),
 			masterFader:      r.PID("master_fader"),
+			masterFaderDB:    r.PID("master_fader_db"),
 			snapshotUp:       r.PID("snapshot_up"),
 			snapshotDown:     r.PID("snapshot_down"),
 			currentSnapshot:  r.PID("current_snapshot"),
@@ -75,18 +77,22 @@ func TestOutboundStrings(t *testing.T) {
 		param *pb.Parameter
 		want  string
 	}{
+		// Fader inputs are on the 0–100 scale; the wire value is that /100.
 		{"input 3 mute on", b.Param(d.pids.channelMute, d.id, b.Bool(true, 3)), "SETD^i.2.mute^1"},
 		{"input 3 mute off", b.Param(d.pids.channelMute, d.id, b.Bool(false, 3)), "SETD^i.2.mute^0"},
-		{"input 3 fader 0.4", b.Param(d.pids.channelFader, d.id, b.Float(0.4, 3)), "SETD^i.2.mix^0.4"},
-		{"input 3 fader clamp high", b.Param(d.pids.channelFader, d.id, b.Float(1.2, 3)), "SETD^i.2.mix^1"},
+		{"input 3 fader 40", b.Param(d.pids.channelFader, d.id, b.Float(40, 3)), "SETD^i.2.mix^0.4"},
+		{"input 3 fader clamp high", b.Param(d.pids.channelFader, d.id, b.Float(120, 3)), "SETD^i.2.mix^1"},
 		{"input 3 fader clamp low", b.Param(d.pids.channelFader, d.id, b.Float(-4, 3)), "SETD^i.2.mix^0"},
-		{"input 3 fader -12dB", b.Param(d.pids.channelFader, d.id, b.Float(0.49333689429, 3)), "SETD^i.2.mix^0.49333689429"},
+		// A dB-derived exact wire string is covered by TestOutboundDBFader. The old
+		// -12 dB literal is dropped here: dividing an arbitrary 0–100 value by 100
+		// can lengthen the wire decimal (49.333689429/100 = 0.49333689429000005),
+		// which the mixer accepts but no longer matches the reference string exactly.
 		// line(1) → dimension index inputs+1 = 13 → l.0.
-		{"line 1 fader 0.4", b.Param(d.pids.channelFader, d.id, b.Float(0.4, 13)), "SETD^l.0.mix^0.4"},
+		{"line 1 fader 40", b.Param(d.pids.channelFader, d.id, b.Float(40, 13)), "SETD^l.0.mix^0.4"},
 		{"line 1 mute on", b.Param(d.pids.channelMute, d.id, b.Bool(true, 13)), "SETD^l.0.mute^1"},
 		{"line 1 mute off", b.Param(d.pids.channelMute, d.id, b.Bool(false, 13)), "SETD^l.0.mute^0"},
-		{"master fader 0.8", b.Param(d.pids.masterFader, d.id, b.Float(0.8)), "SETD^m.mix^0.8"},
-		{"master fader clamp high", b.Param(d.pids.masterFader, d.id, b.Float(1.2)), "SETD^m.mix^1"},
+		{"master fader 80", b.Param(d.pids.masterFader, d.id, b.Float(80)), "SETD^m.mix^0.8"},
+		{"master fader clamp high", b.Param(d.pids.masterFader, d.id, b.Float(120)), "SETD^m.mix^1"},
 		{"master fader clamp low", b.Param(d.pids.masterFader, d.id, b.Float(-4)), "SETD^m.mix^0"},
 	}
 	for _, c := range cases {
@@ -100,7 +106,7 @@ func TestOutboundStrings(t *testing.T) {
 // reference produces for setFaderLevelDB(3) on master (0.84375627201).
 func TestOutboundDBFader(t *testing.T) {
 	d := wireTestDevice(t)
-	pos := dbToFaderValue(3)
+	pos := dbToFaderValue(3) * 100 // fader scale is 0–100; wire value is that /100
 	got := mustFirst(t, d.buildWireMessages(b.Param(d.pids.masterFader, d.id, b.Float(pos))))
 	if got != "SETD^m.mix^0.84375627201" {
 		t.Errorf("master +3 dB → %q, want SETD^m.mix^0.84375627201", got)
@@ -118,19 +124,17 @@ func TestInboundMapping(t *testing.T) {
 	}{
 		{"i.0.mute", "1", d.pids.channelMute, []uint32{1}, func(v *pb.ParameterValue) bool { return v.GetBinary() }},
 		{"i.11.mute", "0", d.pids.channelMute, []uint32{12}, func(v *pb.ParameterValue) bool { return !v.GetBinary() }},
-		{"i.2.mix", "0.4", d.pids.channelFader, []uint32{3}, func(v *pb.ParameterValue) bool { return v.GetFloating() == 0.4 }},
+		{"i.2.mix", "0.4", d.pids.channelFader, []uint32{3}, func(v *pb.ParameterValue) bool { return v.GetFloating() == 40 }},
 		{"l.0.mute", "1", d.pids.channelMute, []uint32{13}, func(v *pb.ParameterValue) bool { return v.GetBinary() }},
-		{"l.1.mix", "0.5", d.pids.channelFader, []uint32{14}, func(v *pb.ParameterValue) bool { return v.GetFloating() == 0.5 }},
-		{"m.mix", "0.7", d.pids.masterFader, nil, func(v *pb.ParameterValue) bool { return v.GetFloating() == 0.7 }},
+		{"l.1.mix", "0.5", d.pids.channelFader, []uint32{14}, func(v *pb.ParameterValue) bool { return v.GetFloating() == 50 }},
+		{"m.mix", "0.7", d.pids.masterFader, nil, func(v *pb.ParameterValue) bool { return v.GetFloating() == 70 }},
 	}
 	for _, c := range cases {
-		p := d.inboundParameter(c.path, c.value)
+		ps := d.inboundParameter(c.path, c.value)
+		p := paramByPID(ps, c.wantPID)
 		if p == nil {
-			t.Errorf("%s^%s: no parameter produced", c.path, c.value)
+			t.Errorf("%s^%s: no parameter for PID %d produced", c.path, c.value, c.wantPID)
 			continue
-		}
-		if p.Id.Parameter != c.wantPID {
-			t.Errorf("%s: PID %d, want %d", c.path, p.Id.Parameter, c.wantPID)
 		}
 		if len(p.Value) != 1 {
 			t.Fatalf("%s: want 1 value, got %d", c.path, len(p.Value))
@@ -141,6 +145,55 @@ func TestInboundMapping(t *testing.T) {
 		}
 		if !c.check(v) {
 			t.Errorf("%s^%s: value check failed (%v)", c.path, c.value, v.Value)
+		}
+	}
+}
+
+// paramByPID returns the first parameter in ps matching pid, or nil.
+func paramByPID(ps []*pb.Parameter, pid uint32) *pb.Parameter {
+	for _, p := range ps {
+		if p.Id.Parameter == pid {
+			return p
+		}
+	}
+	return nil
+}
+
+// TestInboundFaderDBCompanion checks a fader path also emits its dB companion
+// with the same dimension and the formatted reading. Wire 0.5 → -11.6 dB;
+// wire 1.0 → 10.0 dB; negligible amplitude → "-inf dB".
+func TestInboundFaderDBCompanion(t *testing.T) {
+	d := wireTestDevice(t)
+
+	cases := []struct {
+		path, value string
+		fPID, dbPID uint32
+		wantDim     []uint32
+		wantFader   float64
+		wantDB      string
+	}{
+		{"i.2.mix", "0.5", d.pids.channelFader, d.pids.channelFaderDB, []uint32{3}, 50, "-11.6 dB"},
+		{"m.mix", "1.0", d.pids.masterFader, d.pids.masterFaderDB, nil, 100, "10.0 dB"},
+		{"l.0.mix", "0", d.pids.channelFader, d.pids.channelFaderDB, []uint32{13}, 0, "-inf dB"},
+	}
+	for _, c := range cases {
+		ps := d.inboundParameter(c.path, c.value)
+		if len(ps) != 2 {
+			t.Fatalf("%s^%s: want 2 parameters (fader+db), got %d", c.path, c.value, len(ps))
+		}
+		f := paramByPID(ps, c.fPID)
+		db := paramByPID(ps, c.dbPID)
+		if f == nil || db == nil {
+			t.Fatalf("%s^%s: missing fader or db parameter (%v)", c.path, c.value, ps)
+		}
+		if f.Value[0].GetFloating() != c.wantFader {
+			t.Errorf("%s^%s: fader = %v, want %v", c.path, c.value, f.Value[0].GetFloating(), c.wantFader)
+		}
+		if !dimEqual(f.Value[0].DimensionID, c.wantDim) || !dimEqual(db.Value[0].DimensionID, c.wantDim) {
+			t.Errorf("%s^%s: dimension mismatch fader=%v db=%v want=%v", c.path, c.value, f.Value[0].DimensionID, db.Value[0].DimensionID, c.wantDim)
+		}
+		if got := db.Value[0].GetStr(); got != c.wantDB {
+			t.Errorf("%s^%s: db text = %q, want %q", c.path, c.value, got, c.wantDB)
 		}
 	}
 }
@@ -157,14 +210,58 @@ func TestInboundIgnoresUnmapped(t *testing.T) {
 		"s.0.mix",         // out-of-scope channel type
 		"m.dim",           // no parameter
 	} {
-		if p := d.inboundParameter(path, "1"); p != nil {
-			t.Errorf("%s: expected no parameter, got PID %d", path, p.Id.Parameter)
+		if ps := d.inboundParameter(path, "1"); len(ps) != 0 {
+			t.Errorf("%s: expected no parameter, got %d", path, len(ps))
 		}
 	}
 	// Non-numeric and non-finite values are rejected (the mixer ignores them too).
 	for _, v := range []string{"", "abc", "NaN", "Inf"} {
-		if p := d.inboundParameter("i.0.mix", v); p != nil {
+		if ps := d.inboundParameter("i.0.mix", v); len(ps) != 0 {
 			t.Errorf("mix value %q should be rejected", v)
+		}
+	}
+}
+
+// TestConfirmWriteFaderDBCompanion checks the optimistic confirm feeds back the
+// 0–100 fader value and its paired dB reading, clamping out-of-range inputs.
+func TestConfirmWriteFaderDBCompanion(t *testing.T) {
+	d := wireTestDevice(t)
+
+	cases := []struct {
+		name        string
+		param       *pb.Parameter
+		fPID, dbPID uint32
+		wantDim     []uint32
+		wantFader   float64
+		wantDB      string
+	}{
+		// wire 0.5 (fader 50) → -11.6 dB
+		{"channel 50", b.Param(d.pids.channelFader, d.id, b.Float(50, 3)), d.pids.channelFader, d.pids.channelFaderDB, []uint32{3}, 50, "-11.6 dB"},
+		// wire 1.0 (fader 100) → 10.0 dB
+		{"master 100", b.Param(d.pids.masterFader, d.id, b.Float(100)), d.pids.masterFader, d.pids.masterFaderDB, nil, 100, "10.0 dB"},
+		// clamp high: fader 120 → 100 → 10.0 dB
+		{"channel clamp high", b.Param(d.pids.channelFader, d.id, b.Float(120, 5)), d.pids.channelFader, d.pids.channelFaderDB, []uint32{5}, 100, "10.0 dB"},
+		// clamp low: fader -4 → 0 → -inf dB
+		{"master clamp low", b.Param(d.pids.masterFader, d.id, b.Float(-4)), d.pids.masterFader, d.pids.masterFaderDB, nil, 0, "-inf dB"},
+	}
+	for _, c := range cases {
+		ps := d.confirmWrite(c.param)
+		if len(ps) != 2 {
+			t.Fatalf("%s: want 2 confirm parameters (fader+db), got %d", c.name, len(ps))
+		}
+		f := paramByPID(ps, c.fPID)
+		db := paramByPID(ps, c.dbPID)
+		if f == nil || db == nil {
+			t.Fatalf("%s: missing fader or db parameter (%v)", c.name, ps)
+		}
+		if f.Value[0].GetFloating() != c.wantFader {
+			t.Errorf("%s: fader = %v, want %v", c.name, f.Value[0].GetFloating(), c.wantFader)
+		}
+		if !dimEqual(f.Value[0].DimensionID, c.wantDim) || !dimEqual(db.Value[0].DimensionID, c.wantDim) {
+			t.Errorf("%s: dimension mismatch fader=%v db=%v want=%v", c.name, f.Value[0].DimensionID, db.Value[0].DimensionID, c.wantDim)
+		}
+		if got := db.Value[0].GetStr(); got != c.wantDB {
+			t.Errorf("%s: db text = %q, want %q", c.name, got, c.wantDB)
 		}
 	}
 }
@@ -210,13 +307,10 @@ func TestRecordInboundMapping(t *testing.T) {
 		{"var.mtk.rec.time", "00:23", d.pids.multitrackTime, nil, "00:23"},
 	}
 	for _, c := range cases {
-		p := d.inboundParameter(c.path, c.value)
+		p := paramByPID(d.inboundParameter(c.path, c.value), c.wantPID)
 		if p == nil {
-			t.Errorf("%s^%s: no parameter produced", c.path, c.value)
+			t.Errorf("%s^%s: no parameter for PID %d produced", c.path, c.value, c.wantPID)
 			continue
-		}
-		if p.Id.Parameter != c.wantPID {
-			t.Errorf("%s: PID %d, want %d", c.path, p.Id.Parameter, c.wantPID)
 		}
 		if c.checkBool != nil && p.Value[0].GetBinary() != *c.checkBool {
 			t.Errorf("%s^%s: bool %v, want %v", c.path, c.value, p.Value[0].GetBinary(), *c.checkBool)
@@ -263,11 +357,11 @@ func TestRecordToggleStateGated(t *testing.T) {
 // confirm would lie during the ~206 ms transition.
 func TestRecordConfirmWriteSkipped(t *testing.T) {
 	d := wireTestDevice(t)
-	if p := d.confirmWrite(b.Param(d.pids.record2track, d.id, b.Bool(true))); p != nil {
-		t.Errorf("record_2track must not be optimistically confirmed, got %+v", p)
+	if ps := d.confirmWrite(b.Param(d.pids.record2track, d.id, b.Bool(true))); len(ps) != 0 {
+		t.Errorf("record_2track must not be optimistically confirmed, got %+v", ps)
 	}
-	if p := d.confirmWrite(b.Param(d.pids.recordMultitrack, d.id, b.Bool(true))); p != nil {
-		t.Errorf("record_multitrack must not be optimistically confirmed, got %+v", p)
+	if ps := d.confirmWrite(b.Param(d.pids.recordMultitrack, d.id, b.Bool(true))); len(ps) != 0 {
+		t.Errorf("record_multitrack must not be optimistically confirmed, got %+v", ps)
 	}
 }
 
