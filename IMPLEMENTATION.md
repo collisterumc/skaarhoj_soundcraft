@@ -287,7 +287,7 @@ reappearing is **routine**, not an error condition:
   window. It never fires on start, and on stop it pulses for only ~76 ms, clearing in the
   same batch as `isRecording`. So the core tracks its own in-flight state instead: after
   sending `RECTOGGLE`, ignore further toggles until `var.isRecording` matches the target
-  or a ~2 s timeout expires (Decision log 2026-08-23). That guard is what stops a corelib
+  or a ~2 s timeout expires (Decision log 2026-08-23). That guard stops a corelib
   `retryCount` double-fire from undoing the first command.
 - `var.recBusy` is still ingested for the read-only `record_busy` parameter, but nothing
   gates on it.
@@ -416,7 +416,7 @@ values first and restored them afterwards; restores were verified against a full
 | Check (TODO §2 bullet) | Result | Evidence |
 |---|---|---|
 | Probe connects, keepalives, logs dump, sends raw messages | PASS | `HTTP/1.1 101 Switching Protocols`; first frame `1::`, then `3:::`-prefixed batches |
-| Transport URL — bare `ws://<ip>` with no handshake | PASS | Connects and dumps immediately. `ws://<ip>/socket.io/1/websocket/<sid>` (sid from `GET /socket.io/1/` → `10291991573095765158:5:5:websocket`) works identically; the bare form is simpler and is what we will use |
+| Transport URL — bare `ws://<ip>` with no handshake | PASS | Connects and dumps immediately. `ws://<ip>/socket.io/1/websocket/<sid>` (sid from `GET /socket.io/1/` → `10291991573095765158:5:5:websocket`) works identically; we use the bare form because it is simpler |
 | Framing: `3:::` out, `3:::` in, `1::`/`2::` ignored, `\n`-batched | PASS | 482 frames sampled: 332 `3:::`, 149 `2::`, 1 `1::`; all text opcode; max payload 2105 B |
 | Dump contains `SETD^i.<n>.mute`, `SETD^i.<n>.mix`, `SETS^var.currentShow`, `SETD^var.isRecording` | PASS | `SETD^i.0.mute^1`, `SETD^i.0.mix^0.09659714599`, `SETS^var.currentShow^Training`, `SETD^var.isRecording^0`, plus `SETD^m.mix^0.7222832053`, `SETD^l.0.mute^0`, `SETS^var.currentSnapshot^2026-08-22` |
 | `SETD^i.0.mute^…` mutes channel 1 | PASS | Write from client A; a second client read back the changed value, and the mixer's stored value changed |

@@ -17,7 +17,7 @@ mixer protocol, **read §9 first**. It records where real hardware contradicted 
 derived from the `soundcraft-ui` library. Those contradictions are exactly where
 reasonable-looking code fails on hardware, and §9 wins over §2 wherever they disagree.
 
-If the docs do not cover something you need, that gap is itself worth reporting.
+If the docs do not cover something you need, report the gap.
 
 ## Rules you cannot break
 
@@ -56,7 +56,7 @@ Comment only non-obvious constraints, invariants, and reasons. Do not describe w
 code already says. Delete comments that good naming made unnecessary.
 
 When you learn something durable about the project, update the repository docs rather than
-keeping it to yourself. That is what makes the next agent's job possible.
+keeping it to yourself. The next agent only sees what the docs record.
 
 ## Reporting
 

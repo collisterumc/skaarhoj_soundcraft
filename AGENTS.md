@@ -63,8 +63,8 @@ scoped deliberately, so don't ask one to do another's job.
 | `adversarial-validator` | Attacking a finished change or claim before a Gate box gets checked |
 | `clarity-reviewer` | Complexity and readability only — it does not hunt for bugs |
 
-Give each one a bounded task. `adversarial-validator` is meant to run even when the work
-looks correct; that is the point of it.
+Give each one a bounded task. Run `adversarial-validator` even when the work looks
+correct; it exists for exactly that case.
 
 Keep project facts in the documents, not in the agent definitions. The agents are told
 which sections to read and are expected to re-read them each run, so a fact recorded once

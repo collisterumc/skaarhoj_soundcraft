@@ -35,6 +35,13 @@ invariants, and reasons only. Flag comments that restate the code, comments left
 a conversation, change summaries, and status reports. Also flag the reverse — a genuinely
 surprising constraint with no comment explaining why it exists.
 
+**Prose that runs backwards.** All prose in the change — comments, log messages, doc
+edits — follows AGENTS.md "Write plainly": subject and verb up front, the point stated
+directly. Flag sentences that bury the point in an abstract subject ("The removal of the
+fold was a simplification") or state it inverted ("Reasoning about what code probably
+does is how wrong claims survive review" instead of "run the code"). Give the plain
+rewrite with the finding.
+
 **Functions doing too much.** One that parses, decides, and writes wants splitting. But do
 not split for a line count; split where there is a real seam.
 
