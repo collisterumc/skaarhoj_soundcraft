@@ -488,6 +488,69 @@ values first and restored them afterwards; restores were verified against a full
   cross-frame buffering is not required. Verified over 332 data frames including full
   dumps.
 
+## 9.2 TestTube integration results (milestone 6.6)
+
+Run 2026-08-23 against the Ui16 at the owner's site, firmware unchanged since §9. Setup:
+the core built from this repo ran in the dev container (gRPC on `:8502`) connected to the
+real mixer; TestTube v1.0.14-pre2 (SKAARHOJ's official core-testing tool, pinned in
+`reference/testtube/`) connected to the core. Effects on the mixer were observed through
+a separate WebSocket client; every touched value was captured first and restore-verified
+from a fresh connection afterwards.
+
+**How the drives ran.** TestTube's CLI pattern engine (patterns: `Binary_default`,
+`Floating_default`, `Integer_default`, `Opt_default`, from its `/patternlist` endpoint)
+could safely exercise only the undimensioned `master_fader` (dry-run). All hardware
+drives therefore went through TestTube's grpc-web proxy (`POST
+/ibeam_core.IbeamCore/Set` on `:8080`) — the same surface TestTube's own web UI uses.
+Oneshot triggers were sent as `Cmd: Trigger` values over that surface.
+
+| Check | Result | Evidence |
+|---|---|---|
+| Parameter enumeration matches the v1 catalog (model Ui16; multitrack absent) | PASS | TestTube `gen` CoreProfile: exactly the 11 registered parameters; multitrack only on Ui24R |
+| `channel_mute` dim 1 (`i.0`) and dim 13 (`l.0`) on/off | PASS | Observer saw the wire change in 38–96 ms; core current matched every step |
+| `channel_fader` dim 1 at 0 / 25 / 62.5 / 100 | PASS | Wire `SETD^i.0.mix^0` / `^0.25` / `^0.625` / `^1` — exact /100 conversion |
+| `channel_fader_db` dim 1 display text | PASS | `-inf dB` / `-32.1 dB` / `-5.5 dB` / `10.0 dB`; restore reading equalled pre-test |
+| `master_fader` small excursion + `master_fader_db` | PASS | 72.2→70→75→restore in ~1.5 s; restore wire string byte-exact (`^0.7222832053`) |
+| External `SETD` from a second client → core current + dB text | PASS | Delivered on the core's Subscribe stream in 35–64 ms |
+| `snapshot_up` / `snapshot_down` triggers | PASS | Adjacent load with wrap both directions; mixer confirmed in ~197 ms; `current_snapshot` followed |
+| External `LOADSNAPSHOT` → `current_snapshot` display | PASS | Core updated 4 ms after the mixer broadcast |
+| `record_2track` start/stop; rapid duplicate Set | PASS | Exactly one `RECTOGGLE` each way; `var.isRecording` confirmed ~134 ms; `record_busy` stop pulse delivered on Subscribe |
+| Read-only values through TestTube `Get` | PASS | `current_snapshot` and `record_busy` matched mixer state before and after |
+| `testtube test` pattern coverage of v1 parameters | LIMITATION | See below — patterns cannot drive dimensioned, trigger, or toggle-with-state parameters safely |
+
+Restore proof: snapshot budget was 4 `LOADSNAPSHOT`; recording ran once for ~5 s and
+ended with `var.isRecording` = 0 from a fresh connection. Final state fingerprints
+differed from pre-test only in mixer-internal `var.spi*` uptime counters.
+
+### TestTube limitations found (v1.0.14-pre2)
+
+- `Binary_default` sends no dimension IDs, so it fails (`UnknownID`) on any dimensioned
+  Binary parameter — zero wire writes, safe but no coverage.
+- `Floating_default` iterates every dimension and slams the 0/100 bounds, so it is
+  unsafe against a live console (all 14 faders, master included, would sweep).
+- No pattern exists for NoValue triggers; `Binary_default` on a Oneshot is rejected by
+  corelib (`InvalidType`), correctly.
+- `Binary_default` on `record_2track` ends with the recorder left running and reports
+  Success (dry-run proof; never run on hardware). Do not pattern-test the record toggle.
+- A pattern killed mid-sweep does not restore swept values. Never interrupt one against
+  hardware.
+
+### Findings for follow-up
+
+- **corelib accepts `Set` on a NoControl parameter** (`record_busy`): the value comes
+  back `assumed=true` with no wire traffic and self-heals only on the next genuine
+  `var.recBusy` change, which may be far away. Oneshot parameters are protected;
+  NoControl Binary apparently is not. Harmless if clients behave (Reactor should never
+  Set a display parameter); worth raising with SKAARHOJ.
+- Corelib absorbs a rapid duplicate Set (same value) and drops an opposite Set that
+  arrives while current still equals it, before the core's in-flight guard is reached.
+  This matches the accepted race-window decision; noted because "the guard suppressed
+  it" is not what happens on that path.
+- `LOADSNAPSHOT` snaps every stored key back to the snapshot, discarding unsaved live
+  mixer state (observed: two faders had drifted from stored values and were snapped
+  back; the pre-test live values were restored by hand). Snapshot testing on a console
+  that is in use carries this hazard.
+
 ## 10. Decision log
 
 Format: `DECISION: <date> — <topic> — <decision> — <rationale>`

@@ -306,25 +306,32 @@ endpoint (default `127.0.0.1:8502`), so this block runs from the dev container a
 no Blue Pill required. The core connects to the real Ui16; every touched mixer value is
 captured first and restore-verified afterwards (milestone-2 discipline).
 
-- [ ] Enumerate the registered parameters through TestTube against the running core and
+- [x] Enumerate the registered parameters through TestTube against the running core and
       confirm the listing matches the v1 catalog for the configured model
-- [ ] Drive each controllable parameter with `testtube test <pattern> <parameter>`:
+- [x] Drive each controllable parameter with `testtube test <pattern> <parameter>`:
       `channel_mute` (≥ 2 channels including a line-in), `channel_fader` (bounds 0/100
       and mid values), `master_fader`, `record_2track` (start then stop) — verify each
       action on the mixer via an observer WebSocket client, and verify feedback (current
-      value plus the dB companion text) through the core
-- [ ] `snapshot_up` / `snapshot_down`: exercise through TestTube if it supports Oneshot
+      value plus the dB companion text) through the core — done 2026-08-23; the pattern
+      engine proved safe only for `master_fader` (dry-run), so hardware drives went
+      through TestTube's grpc-web proxy, the surface its own web UI uses (see
+      IMPLEMENTATION.md §9.2 for the pattern-engine limitations)
+- [x] `snapshot_up` / `snapshot_down`: exercise through TestTube if it supports Oneshot
       triggers; otherwise record the limitation and cover via direct gRPC, labeled as
-      such in the results
-- [ ] End state: original values restored and verified (state fingerprint),
-      `var.isRecording` = 0 from a fresh connection
-- [ ] Record results in IMPLEMENTATION.md § "TestTube integration results": one row per
+      such in the results — no trigger pattern exists; triggers were sent through
+      TestTube's grpc-web proxy and worked (wrap both directions, ~197 ms confirm)
+- [x] End state: original values restored and verified (state fingerprint),
+      `var.isRecording` = 0 from a fresh connection — fingerprints differ only in
+      mixer-internal `var.spi*` counters; two fader values found drifted pre-test were
+      restored to their live (non-snapshot) values
+- [x] Record results in IMPLEMENTATION.md § "TestTube integration results": one row per
       v1 parameter, PASS/FAIL/LIMITATION, each with a captured evidence excerpt
 
 **Gate G6.6 (agent-assertable):**
-- [ ] The results table has a row for every v1 parameter; no FAIL row lacks a linked
-      Decision-log mitigation entry
-- [ ] Restore proof recorded; `git status --porcelain` shows only documentation changes
+- [x] The results table has a row for every v1 parameter; no FAIL row lacks a linked
+      Decision-log mitigation entry — all rows PASS except the pattern-coverage
+      LIMITATION row; zero FAIL rows
+- [x] Restore proof recorded; `git status --porcelain` shows only documentation changes
       (no binaries or test artifacts committed)
 
 ---
