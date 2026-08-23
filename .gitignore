@@ -1,3 +1,9 @@
 # Local reference material (third-party clones + copyrighted manuals/images) — not committed.
 # Rebuild it with the step-by-step guide in README.md → "Reference material".
 reference/
+
+# Build artifact (go build writes the main-package binary into the repo root)
+/skaarhoj_soundcraft
+
+# Config dir the corelib creates when run without IBEAM_CONFIG_DIR
+skaarhoj_soundcraft-storage/

@@ -171,7 +171,10 @@ Consequences:
   override (`ibeam-lib-config/config.go` ~L24-L63).
 - `RegisterModel` per mixer model; `RegisterParameterForModels` for model-specific
   parameters (multitrack → Ui24R only). Devices from config registered via
-  `RegisterDeviceWithModelName`.
+  `RegisterDevice(deviceID, modelID)` with the ModelID from `BaseDeviceConfig`.
+  Do **not** use `RegisterDeviceWithModelName`: in corelib v0.4.41 it finds the model by
+  name but never assigns the found ID, so it always registers model 0 (generic)
+  (`parameter-registry.go` ~L562, found 2026-08-23).
 - Connection state: a `connection` parameter (`GenericType_ConnectionState`) is
   auto-added with ID 1 if not registered; the template registers it explicitly (Binary,
   NoControl-style, fed via `toManager` on connect/disconnect). When a connection-state
@@ -307,7 +310,8 @@ reappearing is **routine**, not an error condition:
 ## 7. Open questions (feed TODO §0)
 
 1. **Licensing** — RESOLVED, see Decision log entry 2026-07-20. Residual accepted risk:
-   `ibeam-corelib-go` & `ibeam-core-proto` have no LICENSE file (implied license via
+   `ibeam-corelib-go`, `ibeam-core-proto` & `ibeam-lib-env` (embedded as an indirect
+   dependency; verified 2026-08-23) have no LICENSE file (implied license via
    publication-for-consumption); mitigate with source-only releases; optionally request a
    LICENSE from SKAARHOJ.
 2. **Packaging for on-device install** — RESOLVED approach, see §8. We build the core

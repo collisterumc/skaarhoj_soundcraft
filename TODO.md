@@ -19,8 +19,8 @@ Full context for each is in [IMPLEMENTATION.md](IMPLEMENTATION.md) § "Open ques
       redistributed by us. Anything copied near-verbatim from `core-skaarhoj-template`
       must retain Apache-2.0 + Commons Clause attribution (prefer writing from the
       IMPLEMENTATION.md spec instead). Residual (accepted) risk: `ibeam-corelib-go` /
-      `ibeam-core-proto` lack a LICENSE file — implied license only; prefer source-only
-      releases and optionally ask SKAARHOJ to add a LICENSE.
+      `ibeam-core-proto` / `ibeam-lib-env` lack a LICENSE file — implied license only;
+      prefer source-only releases and optionally ask SKAARHOJ to add a LICENSE.
 - [x] **On-device deployment — approach set 2026-07-20.** Runs on the Blue Pill. We build
       the core as a standard `.ipks`, a gzipped opkg/ipk holding the arm64 binary at
       `/usr/bin/<core>` plus a runit service under `/service/pkg/<core>`. We install it
@@ -135,35 +135,36 @@ feedback was proven with a second WebSocket client instead.
 
 ## 3. Core skeleton (first committed code)
 
-- [ ] Copy/adapt the template layout: `main.go`, `parameters.go`, `process.go`, `config.go`
+- [x] Copy/adapt the template layout: `main.go`, `parameters.go`, `process.go`, `config.go`
       (module name `skaarhoj_soundcraft` or agreed name; rename all
       `core-skaarhoj-template` references)
-- [ ] CoreInfo metadata: name, label "Soundcraft Ui", device category Audio, connection type
+- [x] CoreInfo metadata: name, label "Soundcraft Ui", device category Audio, connection type
       TCP/WebSocket, DeviceWebUILink `http://{ip}/`
-- [ ] Register three models: Ui12, Ui16, Ui24R with per-model channel counts
-- [ ] Config schema: devices list with IP (embed `BaseDeviceConfig`)
-- [ ] Connection-state parameter `connection` (GenericType ConnectionState) registered
+- [x] Register three models: Ui12, Ui16, Ui24R with per-model channel counts
+- [x] Config schema: devices list with IP (embed `BaseDeviceConfig`)
+- [x] Connection-state parameter `connection` (GenericType ConnectionState) registered
       explicitly and reported on WS connect/disconnect; no parameter sets
       `controllableWhileDisconnected`, so Reactor indicates and blocks outputs while the
       mixer is powered off
-- [ ] WebSocket client: connect, `3:::` frame handling (if confirmed in G2), newline-split
+- [x] WebSocket client: connect, `3:::` frame handling (if confirmed in G2), newline-split
       batch parsing, `ALIVE` keepalive every 1 s, reconnect **forever** with 2 s backoff
       (mixer power-cycling by the SKAARHOJ is routine), read deadline for dead-link
       detection (power cut sends no FIN), state-change-only connection logging
-- [ ] In-memory mixer state store (flat `map[string]value` mirroring SETD/SETS paths);
+- [x] In-memory mixer state store (flat `map[string]value` mirroring SETD/SETS paths);
       cleared on disconnect; writes arriving while disconnected are discarded, not queued
 
 **Gate G3 (agent-assertable):**
-- [ ] `go build ./...` and `go vet ./...` succeed at repo root
-- [ ] `go test ./...` passes; unit tests exist for: frame encode/decode, message parse
+- [x] `go build ./...` and `go vet ./...` succeed at repo root
+- [x] `go test ./...` passes; unit tests exist for: frame encode/decode, message parse
       (SETD/SETS/BMSG/list replies), reconnect state machine (with mocked conn),
       dead-link detection (mocked conn goes silent → redial), store cleared and writes
       discarded while disconnected
-- [ ] Running the core with a stub config starts the gRPC server (log line asserts listen
+- [x] Running the core with a stub config starts the gRPC server (log line asserts listen
       address) and retries the mixer connection without crashing for ≥ 60 s against a
-      non-existent IP
-- [ ] Against a real/demo mixer: log shows connection established and ≥ 1 state message
-      ingested; connection parameter reports connected=1
+      non-existent IP — verified 2026-08-23, 70 s against 192.0.2.55, one transition log
+- [x] Against a real/demo mixer: log shows connection established and ≥ 1 state message
+      ingested; connection parameter reports connected=1 — verified 2026-08-23 against
+      the Ui16 at 192.168.1.4, read-only (ALIVE keepalives only)
 
 ---
 
