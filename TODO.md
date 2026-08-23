@@ -269,6 +269,33 @@ feedback was proven with a second WebSocket client instead.
 
 ---
 
+## 6.5 Remote-core attach (dev loop without on-device install)
+
+Reactor's Device Core Sharing connects to device cores on a remote host: a core's
+Address setting takes a remote IP, and sharing "uses port 8502 by default" (Reactor
+manual; docs.skaarhoj.com → "Shared Device Cores"). Our core already serves ibeam gRPC
+on `:8502` when run off skaarOS. The docs describe only Blue Pills as sharing hosts and
+do not explain how one port serves multiple cores or whether Reactor will attach to a
+bare core on a generic machine — that is not knowable from the docs, so this milestone
+settles it by experiment. Requires the owner and the Blue Pill on the same subnet.
+
+- [ ] Run the core in the dev container (listens on `:8502`); on the Blue Pill, add the
+      core with the dev machine's IP as Address (manual entry; also try the
+      "Shared Core" discovery path and note whether the bare core is discovered)
+- [ ] If Reactor attaches: drive mute, fader, snapshot up/down, and record from the
+      browser panel simulator against the Ui16; note per-parameter results, including
+      whether `channel_fader` pairs per-channel with `channel_fader_db` on displays
+- [ ] Document the outcome: a working no-install dev flow in README, or a dated
+      Decision-log entry that remote attach needs a real Blue Pill host and testing
+      goes through `.ipks` installs
+
+**Gate G6.5 (agent-assertable):**
+- [ ] Either a log/trace shows Reactor on the Blue Pill controlling the Ui16 through the
+      dev-container core (panel-simulator action → mixer change), or a dated `DECISION:`
+      entry records that this path is unsupported and why
+
+---
+
 ## 7. Hardening, packaging & deployment
 
 - [ ] Reconnect soak test: repeated mixer power-cycles (the SKAARHOJ switches mixer power
@@ -307,7 +334,8 @@ graph LR
     G3 --> G4[4 Mute + fader]
     G3 --> G5[5 Snapshots]
     G3 --> G6[6 Recording]
-    G4 --> G7[7 Hardening/deploy]
-    G5 --> G7
-    G6 --> G7
+    G4 --> G65[6.5 Remote-core attach]
+    G5 --> G65
+    G6 --> G65
+    G65 --> G7[7 Hardening/deploy]
 ```
