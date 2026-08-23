@@ -61,9 +61,11 @@ expected-string tests in `__tests__/outbound-messages.spec.ts`.
 | Reconnect | on error, retry after **2000 ms**; manual reconnect = disconnect, wait 1 s, connect | mixer-connection.ts ~L23, L154, L230 |
 | Handshake | none required; mixer pushes a full state dump on connect. soundcraft-ui waits heuristically (25 ms quiet or 250 ms cap) for "init done" | soundcraft-ui.ts ~L180, utils.ts ~L143 |
 
-> The `3:::` / `1::` prefixes are Socket.IO-0.9-era framing remnants. **Verify on real
-> hardware in milestone 2** — including whether a `/socket.io/1/websocket` path or HTTP
-> handshake is needed (the library suggests not).
+> The `3:::` / `1::` prefixes are Socket.IO-0.9-era framing remnants. **Verified on a Ui16
+> (firmware 1.0.7548-ui16) 2026-08-23** — the whole table holds. No HTTP handshake is
+> needed; the `/socket.io/1/websocket/<sid>` path also works but buys nothing. The mixer
+> closes a client that sends nothing after ~19 s, so the keepalive is mandatory, not
+> optional. Details and message excerpts in §9.
 
 ### 2.2 Message families
 
@@ -73,7 +75,7 @@ expected-string tests in `__tests__/outbound-messages.spec.ts`.
 | String set | `SETS^<path>^<string>` | both | value may itself contain `^` — parse path between first two `^` only, value = remainder |
 | Command | `<CMD>[^arg[^arg…]]` | out | e.g. `RECTOGGLE`, `LOADSNAPSHOT^show^snap`, `MEDIA_PLAY` |
 | List reply (flat) | `SHOWLIST^item^item…` | in | |
-| List reply (keyed) | `SNAPSHOTLIST^<show>^item^item…` | in | empty = trailing `^` (`CUELIST^Default^`) |
+| List reply (keyed) | `SNAPSHOTLIST^<show>^item^item…` | in | empty = trailing `^` (`SNAPSHOTLIST^2023-10-19^`); unknown show returns the same empty form. `CUELIST` gets no reply at all on Ui16 firmware 1.0.7548 |
 | Sync | `BMSG^SYNC^<syncId>^<index>` | both | not needed for v1 |
 
 ### 2.3 Addressing
@@ -133,16 +135,29 @@ the dB conversion only for display labels; a dB-calibrated parameter variant is 
 
 ### 2.7 Feedback behavior (critical design fact)
 
-The mixer pushes every state change to **all** connected WebSocket clients, including the
-echo of our own writes. There is no subscribe step. Consequences:
+Verified on hardware 2026-08-23 (§9). The mixer pushes state changes to every connected
+WebSocket client **except the one that caused the change**, and only when the value
+actually changes. There is no subscribe step. Three rules:
 
-- Feedback for external changes is free: just reduce all inbound `SETD`/`SETS` into the
-  store and forward mapped keys to `toManager`.
-- Our own writes come back as echoes → they conveniently confirm the target and clear
-  assumed-state through the normal `ingestCurrentParameter` path. Use
-  `acceptanceThreshold` on floats to avoid flapping on rounding.
-- Loop-storm risk: do **not** re-send to the mixer in response to inbound messages; only
-  `fromManager` traffic goes out. The corelib's target/current model handles the rest.
+1. **No self-echo on writes.** A client that sends `SETD^<path>^<v>` never receives that
+   `SETD` back. Other clients do, within 41–75 ms.
+2. **No push when nothing changes.** Writing a path's current value is silent to everyone.
+3. **Mixer-generated changes reach everyone, sender included.** State the mixer computes
+   itself — `var.isRecording` after `RECTOGGLE`, `var.currentSnapshot` and the ~140 keys
+   after `LOADSNAPSHOT` — is delivered to the sender too. Rule 1 suppresses only the exact
+   message the sender wrote.
+
+Consequences:
+
+- Feedback for external changes is free: reduce all inbound `SETD`/`SETS` into the store
+  and forward mapped keys to `toManager`.
+- **Our own writes are never confirmed by the mixer.** Rules 1 and 2 mean a write can
+  produce no wire traffic at all, so assumed-state cannot be cleared by waiting for an
+  echo. The core confirms optimistically: after sending, ingest the sent value as current
+  (see Decision log 2026-08-23). Use `acceptanceThreshold` on floats anyway, since other
+  clients' float pushes still arrive at ~9 decimal places.
+- Rule 1 also removes the feedback-loop risk for our own traffic. Still do **not** re-send
+  to the mixer in response to inbound messages; only `fromManager` traffic goes out.
 
 ---
 
@@ -224,7 +239,8 @@ per device goroutine (runs for the life of the service):
       inbound frame  -> reset read deadline; strip "3:::", split "\n" ->
                         SETD/SETS -> store.set(path, val); if mapped -> toManager
                         SHOWLIST/SNAPSHOTLIST -> update snapshot list cache
-      fromManager    -> map parameter -> wire msg -> send "3:::"+msg
+      fromManager    -> map parameter -> clamp -> wire msg -> send "3:::"+msg
+                        -> immediately ingest sent value as current (no echo arrives)
       read deadline hit / disconnect
                      -> connection=0; stop ticker; clear store + snapshot cache; retry
 ```
@@ -239,9 +255,10 @@ reappearing is **routine**, not an error condition:
   Log the transition once per state change (connected ↔ disconnected), not per retry
   attempt, to avoid log spam during long power-off periods.
 - **Dead-link detection.** A power cut usually produces no TCP FIN, so a blocked read
-  can hang indefinitely. Use a read deadline (~5 s): the mixer chatters continuously
-  (state/VU traffic), so silence means the link is dead — drop and redial. (`ALIVE` is
-  client→mixer only; confirm the idle-traffic assumption in milestone 2.)
+  can hang indefinitely. Use a read deadline (~5 s): the mixer chatters continuously —
+  measured `RTA` ~27 Hz, `VU2` ~6 Hz, `2::` ~13 Hz, worst observed gap 2.65 s — so silence
+  means the link is dead; drop and redial. (`ALIVE` is client→mixer only.) Idle traffic
+  confirmed 2026-08-23; behavior on an actual power cut is still untested (§9).
 - **On disconnect:** set `connection`=0 — Reactor indicates the state and blocks the
   other parameters (none set `controllableWhileDisconnected`). Clear the in-memory
   store and snapshot cache so no stale state is served or used for gating; the record
@@ -258,15 +275,18 @@ reappearing is **routine**, not an error condition:
 - Outbound writes must be serialized (single writer goroutine); WS libs are not
   concurrent-write-safe.
 - Recording toggle: symmetric gate — on target ≠ `var.isRecording` → send `RECTOGGLE`
-  (covers both start and stop); rely on state echo to confirm and drive the button
-  display. Race window accepted (G0 decision 2026-07-20; matches the mixer's own web UI).
-- `var.recBusy` semantics are **unverified**: presumed a transient flag while the
-  recorder opens/finalizes the file on the USB stick (soundcraft-ui exposes it but never
-  gates control on it). We tentatively suppress sends while `recBusy`=1 to guard against
-  retry double-fire: if `isRecording` lags during the start/stop transition, a corelib
-  retry (`retryCount`) would fire a second `RECTOGGLE` and undo the first. Milestone 2
-  observes `recBusy` timing; if it doesn't cover the transition window, drop the
-  suppression and tune `controlDelayMs`/retry instead.
+  (covers both start and stop). `var.isRecording` reaches the sender too, so it drives the
+  button display. Race window accepted (G0 decision 2026-07-20; matches the mixer's own
+  web UI).
+- **In-flight guard replaces `recBusy` suppression.** Measured on hardware 2026-08-23:
+  `RECTOGGLE` → `var.isRecording` takes ~206 ms, and `var.recBusy` does not cover it —
+  it never fires on start, and on stop it pulses for only ~76 ms, clearing in the same
+  batch as `isRecording`. So the core tracks its own in-flight state: after sending
+  `RECTOGGLE`, ignore further toggles until `var.isRecording` matches the target or a
+  ~2 s timeout expires (Decision log 2026-08-23). This is what protects against a corelib
+  `retryCount` double-fire undoing the first command.
+- `var.recBusy` is still ingested for the read-only `record_busy` parameter, but nothing
+  gates on it.
 
 ## 6. Testing strategy
 
@@ -275,11 +295,13 @@ reappearing is **routine**, not an error condition:
   `LOADSNAPSHOT^show^snap`), dB conversion vectors, list-reply parser, record gating.
 - **Mock mixer:** tiny WS server replaying a captured init dump for integration tests of
   the full loop without hardware; also simulates power-cycles (abrupt close and silent
-  hang without FIN) to exercise reconnect and dead-link detection. Capture a real dump
-  in milestone 2 and store it under `testdata/` (own capture = no license concern).
-- **Hardware/demo:** Soundcraft offers an offline demo of the Ui24R web UI
-  (`http://uiremoteapp.soundcraft.com` historically); whether it speaks WS is unverified —
-  probe in milestone 2. Real hardware is the gate authority.
+  hang without FIN) to exercise reconnect and dead-link detection. A real Ui16 dump is
+  ~2750 lines and carries no license concern (our own capture), but it does carry channel
+  names, show names and preset names from a live venue. **Scrub identifying strings before
+  committing anything to `testdata/`** — this is a public repo. The mock must also
+  reproduce the no-self-echo rule (§2.7), or it will not catch optimistic-confirm bugs.
+- **Hardware/demo:** the Ui16 at the owner's site is the gate authority. Soundcraft's
+  offline Ui24R web demo was not probed in milestone 2 and remains an unknown.
 
 ## 7. Open questions (feed TODO §0)
 
@@ -294,9 +316,9 @@ reappearing is **routine**, not an error condition:
    `skaarOS-cli` availability is a nice-to-have, not a blocker.
 3. **Blue Pill CPU architecture** — RESOLVED: **arm64** (sample package control file
    `Architecture: arm64`; ELF machine 0xB7/AArch64; static Go 1.25.6 binary).
-4. **Socket.IO framing on current firmware** — `3:::` prefix and pathless `ws://ip` derive
-   from soundcraft-ui (actively maintained, so likely correct); still verify against our
-   firmware version in milestone 2, including behavior differences Ui16 vs Ui24R.
+4. **Socket.IO framing on current firmware** — RESOLVED 2026-08-23: `3:::` prefix and
+   pathless `ws://ip` both confirmed on Ui16 firmware 1.0.7548-ui16 (§9). Ui24R remains
+   unverified — no hardware.
 5. **`RECTOGGLE`-only recording control** — RESOLVED, see Decision log entry 2026-07-20:
    single toggle with state feedback; race window accepted.
 6. **Snapshot selection UX** — RESOLVED, see Decision log entry 2026-07-20: up/down
@@ -378,11 +400,73 @@ needs none), **`gorilla/websocket v1.5.3`**, `BurntSushi/toml`, `sirupsen/logrus
   ourselves, we pause and work with SKAARHOJ to identify the supported path for
   publishing a third-party core.
 
-## 9. Protocol validation results (milestone 2 — to be filled)
+## 9. Protocol validation results (milestone 2)
 
-| Check | Result | Evidence |
+Captured 2026-08-23 against the owner's mixer at `192.168.1.4`: **Ui16**, `model^ui16`,
+`firmware^1.0.7548-ui16`, `schema^6`. Probe was a throwaway stdlib-only Python RFC6455
+client in `/tmp/probe` (not committed, per Gate G2). Every test captured the affected
+values first and restored them afterwards; restores were verified against a full
+2746-key state fingerprint and came back clean.
+
+| Check (TODO §2 bullet) | Result | Evidence |
 |---|---|---|
-| _pending — see TODO §2_ | | |
+| Probe connects, keepalives, logs dump, sends raw messages | PASS | `HTTP/1.1 101 Switching Protocols`; first frame `1::`, then `3:::`-prefixed batches |
+| Transport URL — bare `ws://<ip>` with no handshake | PASS | Connects and dumps immediately. `ws://<ip>/socket.io/1/websocket/<sid>` (sid from `GET /socket.io/1/` → `10291991573095765158:5:5:websocket`) works identically; the bare form is simpler and is what we will use |
+| Framing: `3:::` out, `3:::` in, `1::`/`2::` ignored, `\n`-batched | PASS | 482 frames sampled: 332 `3:::`, 149 `2::`, 1 `1::`; all text opcode; max payload 2105 B |
+| Dump contains `SETD^i.<n>.mute`, `SETD^i.<n>.mix`, `SETS^var.currentShow`, `SETD^var.isRecording` | PASS | `SETD^i.0.mute^1`, `SETD^i.0.mix^0.09659714599`, `SETS^var.currentShow^Training`, `SETD^var.isRecording^0`, plus `SETD^m.mix^0.7222832053`, `SETD^l.0.mute^0`, `SETS^var.currentSnapshot^2026-08-22` |
+| `SETD^i.0.mute^…` mutes channel 1 | PASS | Write from client A; a second client read back the changed value, and the mixer's stored value changed |
+| …"and the change is echoed back" to the writer | **DEVIATION** | The writer never sees its own write. A wrote `i.0.mute` 0,1,0 → A saw 0 pushes, B saw all 3. Reversed roles: B wrote, A saw it, B saw nothing. See §2.7 |
+| External changes arrive unsolicited | PASS (by proxy) | Second WebSocket client receives every change within 41–75 ms. The mixer's own web UI was **not** exercised — it is just another client of this same socket, but that specific path is untested |
+| `SHOWLIST` / `SNAPSHOTLIST^<show>` formats | PASS | `SHOWLIST^2023-10-19^2023-10-22^2024-03-13^Default^Training`; `SNAPSHOTLIST^Training^2024-03-17^…^2026-08-22`; empty list = trailing `^`: `SNAPSHOTLIST^2023-10-19^`; unknown show also returns the empty form: `SNAPSHOTLIST^NoSuchShow^` |
+| `CUELIST` reply format | **DEVIATION** | `CUELIST^<show>` draws **no reply at all** on this firmware, for any of the 5 shows. The `CUELIST^Default^` empty-list example in §2.2 came from soundcraft-ui, not from hardware. The trailing-`^` empty form is still confirmed, via `SNAPSHOTLIST` |
+| `LOADSNAPSHOT^<show>^<snap>` works and updates `var.currentSnapshot` | PASS | `SETS^var.currentSnapshot^2025-03-02` at +227 ms, followed by ~140 changed `SETD`/`SETS` keys (a delta, not a full dump). Reloading the original snapshot restored all 2746 non-volatile keys exactly |
+| `RECTOGGLE` toggles `var.isRecording` | PASS | Start: `SETD^var.isRecording^1` at +206 ms. Stop: `SETD^var.isRecording^0` at +227 ms |
+| `var.recBusy` covers the start/stop transition | **DEVIATION** | It does not. On **start** `recBusy` never fires at all. On **stop** it pulses `SETD^var.recBusy^1` (+151 ms) → `^0` (+227 ms), a ~76 ms window that closes in the same batch as `isRecording^0`. It cannot guard the 206 ms command-to-state race. See §5 |
+| Idle traffic suitable for read-deadline dead-link detection | PASS | Continuous `RTA` (~27 Hz), `VU2` (~6 Hz), `2::` (~13 Hz). Max observed gap between frames 2.65 s; p99 0.26 s. A 5 s read deadline is safe |
+| Keepalive required | PASS | A client that sends nothing is closed by the mixer after **19.4 s** (telemetry to it stops ~8 s in). `ALIVE` every 5 s keeps it open, as does replying `2::` to the mixer's `2::` heartbeats. The specified 1 s `ALIVE` is comfortably sufficient |
+| Power-off behavior (TCP FIN vs. silent drop) | **UNTESTED** | Requires physically cutting mixer power; deferred at the owner's request. The 5 s read deadline is designed to cover both cases regardless |
+| Offline Ui24R demo as a test target | **UNTESTED** | Not probed; real Ui16 hardware was available, which §6 makes the gate authority anyway |
+
+### 9.1 Additional findings not anticipated by the spec
+
+- **Model/channel detection confirmed.** `model^ui16` is the reliable key. `type^8ch` also
+  exists and does *not* mean 8 inputs — do not use it for sizing. Channel indices in the
+  dump matched §2.6's Ui16 row exactly: `i` 0–11, `l` 0–1, `p` 0–1, `f` 0–3, `s` 0–3,
+  `a` 0–5.
+- **Changes are broadcast only when the value actually changes.** Re-writing a path with
+  its current value produces no push to anyone. Combined with the no-self-echo rule, a
+  write can be entirely silent on the wire.
+- **The mixer does not validate or clamp values.** `SETD^i.0.mix^1.5` and `^-0.2` were
+  stored verbatim; `SETD^i.0.mute^2` and `^0.5` were accepted as-is. Non-numeric and empty
+  values are ignored. **The core must clamp to [0,1] and send only `0`/`1` for booleans.**
+- **Floats are stored to ~9 decimal places.** `0.123456789012345` came back as
+  `0.123456789`. Values we send are otherwise echoed to other clients verbatim, so
+  `acceptanceThreshold` on float parameters remains worthwhile.
+- **`MSG^$SNAPLOAD^<snap>` is a sender-only acknowledgement.** The client that issued
+  `LOADSNAPSHOT` receives it; other clients do not. This is the one case where the sender
+  gets something the observers don't — the inverse of the `SETD` echo rule.
+- **Mixer-generated state changes DO reach the command's sender.** The no-echo rule is
+  narrow: it suppresses only the exact `SETD`/`SETS` the sender wrote. State the mixer
+  computes itself (`var.currentSnapshot` and the ~140 keys after a snapshot load,
+  `var.isRecording` after `RECTOGGLE`) is delivered to sender and observers alike.
+- **Unknown commands are silently ignored.** `BOGUSCMD`, `GETSHOWS`, `PLAYLIST`, bare
+  `SNAPSHOTLIST`, `SETD` with a bogus path — none produced a reply, an error, or a
+  re-dump.
+- **No spontaneous re-dumps.** Over 120 s idle, and across 3 connect/disconnect cycles of a
+  second client, zero unsolicited full dumps. The initial dump completes in 0.2–0.55 s and
+  is ~2750 `SETD`/`SETS` lines. One probe run did see dump lines still arriving ~12 s after
+  connect; it did not reproduce in 6 subsequent trials, but ingest should stay idempotent
+  and must not assume the dump is complete after a fixed short wait. soundcraft-ui's
+  "25 ms quiet or 250 ms cap" init heuristic would have misfired on that run.
+- **`var.mtk.present^1` is reported by this Ui16**, which has no multitrack recorder.
+  Gate the multitrack parameters on `model`, not on `var.mtk.present`. The
+  `var.mtk.rec.*` keys are absent from the Ui16 dump.
+- **`var.usbfill` streams at ~13 Hz while recording** (a 0–1 buffer-fill indicator) and
+  reads `0` when idle. It is noisy; do not map it to a parameter.
+- **Logical lines never split across frames.** Every data frame starts with `3:::`, no
+  frame ends mid-line, and no frame ends with a newline. Frame-at-a-time parsing is safe;
+  cross-frame buffering is not required. Verified over 332 data frames including full
+  dumps.
 
 ## 10. Decision log
 
@@ -434,3 +518,28 @@ Format: `DECISION: <date> — <topic> — <decision> — <rationale>`
   install path and needs no external host.
 - DECISION: 2026-07-20 — Target architecture — linux/arm64, CGO_ENABLED=0. — Confirmed by
   sample package Architecture field and ELF header.
+- DECISION: 2026-08-23 — Confirming our own writes — The core ingests the value it just
+  sent as the current value, immediately after sending (optimistic local confirm); it does
+  not wait for the mixer. — Hardware testing (§9) disproved the §2.7 assumption that our
+  writes echo back: the mixer never returns a `SETD` to the client that wrote it, and
+  suppresses the broadcast entirely when the value is unchanged, so no confirmation can
+  ever arrive. Rejected alternatives: a second observer WebSocket per device (accurate but
+  doubles connections for a mixer that accepts writes unconditionally anyway), and
+  periodic full resync (a recurring ~2750-line dump to correct drift that has no known
+  cause). Accepted risk: a write the mixer ignores — malformed value, or a path that does
+  not exist — leaves our current value wrong until an external change corrects it.
+- DECISION: 2026-08-23 — Recording double-fire guard — Replace the planned
+  `var.recBusy`=1 send-suppression with a core-side in-flight guard: after sending
+  `RECTOGGLE`, ignore further toggles until `var.isRecording` matches the target or ~2 s
+  elapses. — Measured timing (§9) shows `recBusy` cannot do the job: it never fires on
+  start, and on stop pulses only ~76 ms, clearing in the same batch as `isRecording`. The
+  actual race is the ~206 ms between `RECTOGGLE` and `var.isRecording`, which only a
+  core-side guard covers. `record_busy` stays as a read-only parameter.
+- DECISION: 2026-08-23 — Outbound value validation — The core clamps faders to [0.0, 1.0]
+  and sends booleans as exactly `0` or `1`. — The mixer does no validation: it stored
+  `i.0.mix^1.5`, `^-0.2`, and `i.0.mute^2` verbatim (§9). Nothing downstream would catch
+  an out-of-range value, so the core is the only guard.
+- DECISION: 2026-08-23 — Model and capability detection — Size channel dimensions from the
+  `model` state key (`ui16`), never from `type` or `var.mtk.present`. — On the test Ui16,
+  `type` reads `8ch` (which is not the input count) and `var.mtk.present` reads `1`
+  despite the model having no multitrack recorder, so both would misconfigure the core.

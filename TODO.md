@@ -90,29 +90,43 @@ Full context for each is in [IMPLEMENTATION.md](IMPLEMENTATION.md) § "Open ques
 Before writing the core, empirically validate the protocol facts extracted from
 `soundcraft-ui` against a real mixer (or its offline demo, see IMPLEMENTATION.md).
 
-- [ ] Write a throwaway Go (or Node) WebSocket probe in `/tmp` (NOT committed) that:
+Validated 2026-08-23 against a Ui16 (firmware `1.0.7548-ui16`). Results table and full
+findings in [IMPLEMENTATION.md](IMPLEMENTATION.md) §9.
+
+- [x] Write a throwaway Go (or Node) WebSocket probe in `/tmp` (NOT committed) that:
       connects to `ws://<mixer-ip>/socket.io/1/websocket` or `ws://<mixer-ip>` as required,
       sends `ALIVE` keepalives, logs the initial state dump, and can send raw messages
-- [ ] Confirm initial dump contains `SETD^i.<n>.mute^`, `SETD^i.<n>.mix^`, `SETS^var.currentShow^`,
+      — stdlib-only Python RFC6455 client; both URLs work, bare `ws://<ip>` chosen
+- [x] Confirm initial dump contains `SETD^i.<n>.mute^`, `SETD^i.<n>.mix^`, `SETS^var.currentShow^`,
       `SETD^var.isRecording^` keys
-- [ ] Confirm `SETD^i.0.mute^1` mutes channel 1 and that the change is echoed back
-- [ ] Confirm mute/fader changes made in the mixer's own web UI arrive as unsolicited messages
-- [ ] Confirm `SHOWLIST` / `SNAPSHOTLIST^<show>` request-response formats
-- [ ] Confirm `LOADSNAPSHOT^<show>^<snap>` works and updates `var.currentSnapshot`
-- [ ] Confirm `RECTOGGLE` toggles `var.isRecording` (and observe `var.recBusy` timing:
+- [x] Confirm `SETD^i.0.mute^1` mutes channel 1 and that the change is echoed back
+      — mute works; the **echo does not**. The mixer never returns a write to its sender
+- [x] Confirm mute/fader changes made in the mixer's own web UI arrive as unsolicited messages
+      — confirmed via a second WebSocket client (41–75 ms); the web UI itself was not exercised
+- [x] Confirm `SHOWLIST` / `SNAPSHOTLIST^<show>` request-response formats
+      — both confirmed; `CUELIST` draws no reply on this firmware
+- [x] Confirm `LOADSNAPSHOT^<show>^<snap>` works and updates `var.currentSnapshot`
+- [x] Confirm `RECTOGGLE` toggles `var.isRecording` (and observe `var.recBusy` timing:
       does it cover the start/stop transition while `isRecording` lags, i.e. file
       open/finalize on the USB stick?)
-- [ ] Observe idle traffic: confirm the mixer sends continuous data (VU/state) usable for
+      — it does not cover it: never fires on start, ~76 ms pulse on stop
+- [x] Observe idle traffic: confirm the mixer sends continuous data (VU/state) usable for
       read-deadline dead-link detection, and what happens on power-off (TCP FIN vs.
       silent drop) — the SKAARHOJ routinely cuts mixer power in the target installation
-- [ ] Record any deviations from the soundcraft-ui-derived spec in IMPLEMENTATION.md
+      — idle traffic confirmed (worst gap 2.65 s); **power-off behavior still untested**
+- [x] Record any deviations from the soundcraft-ui-derived spec in IMPLEMENTATION.md
 
 **Gate G2 (agent-assertable):**
-- [ ] IMPLEMENTATION.md § "Protocol validation results" contains a table with one PASS/FAIL/
+- [x] IMPLEMENTATION.md § "Protocol validation results" contains a table with one PASS/FAIL/
       DEVIATION row per bullet above, each with a captured message excerpt
-- [ ] No row is FAIL without a linked mitigation entry in the Decision log
-- [ ] No probe/test code exists in the repo: `git status --porcelain` shows only
+- [x] No row is FAIL without a linked mitigation entry in the Decision log
+      — no FAIL rows; each of the three DEVIATION rows has a dated Decision log entry
+- [x] No probe/test code exists in the repo: `git status --porcelain` shows only
       documentation changes
+
+**Carried forward:** mixer power-cycle behavior (TCP FIN vs. silent drop) is unverified —
+exercise it in milestone 7's soak test. The mixer's own web UI was never driven directly;
+feedback was proven with a second WebSocket client instead.
 
 ---
 
