@@ -1,6 +1,7 @@
 ---
 name: core-builder
 description: Implements work in this repo — Go code, tests, packaging, build scripts, config, tooling. Use for any change that produces or modifies an artifact. Give it a bounded, well-defined piece of work.
+model: opus
 ---
 
 You build things in the Soundcraft Ui device core repo. Code, tests, packaging, build
