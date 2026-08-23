@@ -218,7 +218,9 @@ Consequences:
 | 7 | `current_snapshot` | String, NoControl | — | `var.currentShow` + `var.currentSnapshot` |
 | 8 | `record_2track` | Binary, Normal, feedback (toggle) | — | `RECTOGGLE` sent when target ≠ `var.isRecording` |
 | 9 | `record_busy` | Binary, NoControl | — | `var.recBusy` |
-| 10 | `record_multitrack` (Ui24R) | as #8 | — | `MTK_REC_TOGGLE` / `var.mtk.rec.*` |
+| 10 | `record_multitrack` (Ui24R) | as #8 | — | `MTK_REC_TOGGLE` sent when target ≠ `var.mtk.rec.currentState` |
+| 10a | `multitrack_busy` (Ui24R) | Binary, NoControl | — | `var.mtk.rec.busy` |
+| 10b | `multitrack_time` (Ui24R) | String, NoControl | — | `var.mtk.rec.time` |
 | 11 | `channel_name` | String, NoControl | channel | `{i\|l}.<n>.name` |
 
 Channel dimension flattening: single 1-based dimension ordered `inputs, line` with labels
@@ -579,3 +581,42 @@ Format: `DECISION: <date> — <topic> — <decision> — <rationale>`
   `model` state key (`ui16`), never from `type` or `var.mtk.present`. — On the test Ui16,
   `type` reads `8ch` (which is not the input count) and `var.mtk.present` reads `1`
   despite the model having no multitrack recorder, so both would misconfigure the core.
+- DECISION: 2026-08-23 — Recording retry timing vs. the in-flight guard —
+  `record_2track` and `record_multitrack` use `ControlDelayMs` = 300 (> the measured
+  ~206 ms confirm latency), `RetryCount` = 2, `QuarantineDelayMs` = 0; the in-flight guard
+  (`record.go`) is a second, independent line of defense. — Two facts drive the numbers.
+  (1) corelib validation fatals on a Normal + NormalFeedback parameter with `RetryCount` = 0
+  (`parameter-registry-validate.go` ~L48), so retries cannot be disabled. (2) The core does
+  not optimistically confirm a record toggle — the mixer broadcasts the real
+  `var.isRecording` ~206 ms later (§9), and a local confirm would lie during the transition
+  — so the parameter stays in assumed state until that push arrives. corelib schedules its
+  first retry ~`ControlDelayMs` after the send and, once `tryCount` reaches `RetryCount`,
+  reverts the value and emits a `ParameterError_MaxRetrys` (`parameter-manager-process.go`
+  ~L142-165). With the earlier 50 ms delay that error fired at ~102 ms, *before* the 206 ms
+  confirm — a per-press button flicker plus a spurious error in Reactor. Setting
+  `ControlDelayMs` past the confirm latency fixes that: the first reevaluation finds the
+  assumed state already cleared (`!isAssumedState` early return), so no retry re-fires and
+  no error is raised on a normal press. `QuarantineDelayMs` is left 0 on purpose. A nonzero
+  value would delay a late MaxRetrys, but corelib also uses it in the current-value ingest
+  path: an inbound value arriving with `tryCount` == 0 *within* `QuarantineDelayMs` of the
+  last send is not accepted as the new target (`parameter-manager-ingest-current.go`
+  ~L294-303). That would make the core reject an external stop/start that a tablet operator
+  performs inside the window and then re-fight them — a worse failure than the error it
+  suppresses. When the mixer never confirms (no USB stick), MaxRetrys therefore fires at
+  ~602 ms, which is the correct "the command failed" signal. The guard owns the last-known
+  recording state (updated by `observe` on the inbound path) and decides atomically under
+  one lock, so a re-press or any retry that does fire is suppressed until the reported state
+  reaches the sent target (early clear) or a 2 s timeout backstops a state that never
+  arrives. Net: exactly one `RECTOGGLE`/`MTK_REC_TOGGLE` per user intent. The guard resets
+  on disconnect and at session start. Accepted edge: if the outbound queue is full at the
+  moment of a press, the command is dropped while the guard is armed, so the press is lost
+  and the next press waits out the ~2 s timeout — self-healing, and only reachable behind a
+  64-deep stalled write backlog. The mtk confirm latency is untested (no Ui24R), so it
+  reuses the 2-track timing.
+- DECISION: 2026-08-23 — Multitrack recording-state mapping — Map `var.mtk.rec.currentState`
+  directly to the `record_multitrack` Binary (0 = not recording, nonzero = recording), not
+  through the `MtkState` player enum. — In soundcraft-ui the recorder's `recording$` reads
+  `var.mtk.rec.currentState` via `selectBoolean` (`multi-track-recorder.ts` ~L36), i.e. a
+  plain 0/1. The three-value `MtkState` enum (Stopped/Paused/Playing) applies to the
+  *player* key `var.mtk.currentState`, a different path this milestone does not touch.
+  Untested on hardware — no Ui24R on hand; flagged for owner review.

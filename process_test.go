@@ -15,7 +15,7 @@ import (
 
 // mockConn scripts one WebSocket session. Inbound frames arrive via frames;
 // writes are recorded and never looped back, reproducing the mixer's
-// no-self-echo rule (IMPLEMENTATION.md §2.7): the writer never receives the
+// no-self-echo rule: the writer never receives the
 // SETD/SETS it sent.
 type mockConn struct {
 	frames chan string
@@ -132,11 +132,13 @@ func newTestDevice(t *testing.T, dial dialFunc, mutate ...func(*device)) (*devic
 			alivePeriod:  5 * time.Millisecond,
 			readDeadline: 50 * time.Millisecond,
 		},
-		store:       newStateStore(),
-		snapshots:   newSnapshotCache(),
-		connPID:     testConnPID,
-		toManager:   toManager,
-		fromManager: fromManager,
+		store:                 newStateStore(),
+		snapshots:             newSnapshotCache(),
+		connPID:               testConnPID,
+		toManager:             toManager,
+		fromManager:           fromManager,
+		record2trackGuard:     newRecordGuard(recordGuardTimeout),
+		recordMultitrackGuard: newRecordGuard(recordGuardTimeout),
 	}
 	dev.wireMessages = dev.buildWireMessages
 	for _, m := range mutate {
@@ -192,6 +194,8 @@ func withRealWireMapping(t *testing.T) func(*device) {
 			snapshotUp:      r.PID("snapshot_up"),
 			snapshotDown:    r.PID("snapshot_down"),
 			currentSnapshot: r.PID("current_snapshot"),
+			record2track:    r.PID("record_2track"),
+			recordBusy:      r.PID("record_busy"),
 		}
 	}
 }
@@ -212,7 +216,7 @@ func drainToManager(toManager <-chan *pb.Parameter, stop <-chan struct{}) {
 
 // TestFeedbackLoopSafety drives one fader through 100 rapid updates and asserts
 // the outbound count stays bounded: exactly one SETD per update, and no extra
-// sends triggered by inbound traffic (§2.7 rule 1). The mock never echoes.
+// sends triggered by inbound traffic. The mock never echoes.
 func TestFeedbackLoopSafety(t *testing.T) {
 	dialer := newMockDialer()
 	dev, fromManager, toManager := newTestDevice(t, dialer.dial, withRealWireMapping(t))
@@ -225,14 +229,18 @@ func TestFeedbackLoopSafety(t *testing.T) {
 	defer close(stop)
 	drainToManager(toManager, stop)
 
-	const updates = 100
-	for i := 0; i < updates; i++ {
-		fromManager <- b.Param(dev.pids.channelFader, dev.id, b.Float(float64(i)/updates, 3))
+	// Sent in chunks below the 64-deep outbound queue: the pump drops on a full
+	// queue by design, and a starved writer goroutine would otherwise turn the
+	// lossless "exactly 100" assertion into a flake.
+	const updates, chunk = 100, 50
+	for sent := 0; sent < updates; sent += chunk {
+		for i := sent; i < sent+chunk; i++ {
+			fromManager <- b.Param(dev.pids.channelFader, dev.id, b.Float(float64(i)/updates, 3))
+		}
+		waitFor(t, "chunk of fader writes on the wire", func() bool {
+			return countSETD(conn.written(), "SETD^i.2.mix^") == sent+chunk
+		})
 	}
-
-	waitFor(t, "all fader writes on the wire", func() bool {
-		return countSETD(conn.written(), "SETD^i.2.mix^") == updates
-	})
 	// Give any stray resend a chance to appear, then confirm the count held.
 	time.Sleep(30 * time.Millisecond)
 	if got := countSETD(conn.written(), "SETD^i.2.mix^"); got != updates {
@@ -245,7 +253,7 @@ func TestFeedbackLoopSafety(t *testing.T) {
 }
 
 // TestOptimisticConfirm asserts that after an outbound write the sent value is
-// reported to toManager as current, with no echo from the mock (§2.7).
+// reported to toManager as current, with no echo from the mock.
 func TestOptimisticConfirm(t *testing.T) {
 	dialer := newMockDialer()
 	dev, fromManager, toManager := newTestDevice(t, dialer.dial, withRealWireMapping(t))
@@ -510,6 +518,170 @@ func TestSnapshotShowChangeRerequests(t *testing.T) {
 	waitFor(t, "SNAPSHOTLIST for changed show", func() bool {
 		return hasFrame(conn.written(), "SNAPSHOTLIST^ShowB")
 	})
+}
+
+// countCmd counts exact-match command frames on the wire.
+func countCmd(writes []string, cmd string) int {
+	n := 0
+	for _, w := range writes {
+		if w == "3:::"+cmd {
+			n++
+		}
+	}
+	return n
+}
+
+// TestRecordToggleInFlightGuard drives the record toggle through the live loop:
+// one press with a differing target sends exactly one RECTOGGLE, retries during
+// the in-flight window are suppressed, and the mixer's var.isRecording push both
+// clears the guard early and reaches toManager as the record_2track current
+// value. A subsequent opposite press then sends again.
+func TestRecordToggleInFlightGuard(t *testing.T) {
+	dialer := newMockDialer()
+	dev, fromManager, toManager := newTestDevice(t, dialer.dial, withRealWireMapping(t))
+	// A short guard timeout keeps the window-expiry leg fast; the fake-clock unit
+	// tests cover the exact timing, this proves the loop honors the guard.
+	dev.record2trackGuard = newRecordGuard(40 * time.Millisecond)
+
+	conn := newMockConn()
+	dialer.queueConn(conn)
+	awaitConnection(t, toManager, true)
+	stop := make(chan struct{})
+	defer close(stop)
+	drainToManager(toManager, stop)
+
+	// Press start (target true, current unknown → not recording): one RECTOGGLE.
+	fromManager <- b.Param(dev.pids.record2track, dev.id, b.Bool(true))
+	waitFor(t, "one RECTOGGLE on start", func() bool {
+		return countCmd(conn.written(), "RECTOGGLE") == 1
+	})
+
+	// Retries (corelib re-fires the same target) are suppressed while in flight.
+	fromManager <- b.Param(dev.pids.record2track, dev.id, b.Bool(true))
+	fromManager <- b.Param(dev.pids.record2track, dev.id, b.Bool(true))
+	waitFor(t, "retries drained", func() bool { return len(fromManager) == 0 })
+	time.Sleep(20 * time.Millisecond)
+	if got := countCmd(conn.written(), "RECTOGGLE"); got != 1 {
+		t.Fatalf("RECTOGGLE count after retries = %d, want 1", got)
+	}
+
+	// The mixer confirms recording; the guard clears early.
+	conn.frames <- "3:::SETD^var.isRecording^1"
+	waitFor(t, "isRecording in store", func() bool {
+		v, _ := dev.store.get("var.isRecording")
+		return v == "1"
+	})
+
+	// An opposite press (stop) now sends a second RECTOGGLE without waiting out
+	// the timeout.
+	fromManager <- b.Param(dev.pids.record2track, dev.id, b.Bool(false))
+	waitFor(t, "second RECTOGGLE on stop", func() bool {
+		return countCmd(conn.written(), "RECTOGGLE") == 2
+	})
+}
+
+// TestRecordToggleGuardWindowExpires proves the timeout backstop: if the mixer
+// never confirms, a fresh press after the window sends again.
+func TestRecordToggleGuardWindowExpires(t *testing.T) {
+	dialer := newMockDialer()
+	dev, fromManager, toManager := newTestDevice(t, dialer.dial, withRealWireMapping(t))
+	dev.record2trackGuard = newRecordGuard(30 * time.Millisecond)
+
+	conn := newMockConn()
+	dialer.queueConn(conn)
+	awaitConnection(t, toManager, true)
+	stop := make(chan struct{})
+	defer close(stop)
+	drainToManager(toManager, stop)
+
+	fromManager <- b.Param(dev.pids.record2track, dev.id, b.Bool(true))
+	waitFor(t, "first RECTOGGLE", func() bool {
+		return countCmd(conn.written(), "RECTOGGLE") == 1
+	})
+
+	// No confirmation arrives. After the window, a fresh press sends again.
+	time.Sleep(40 * time.Millisecond)
+	fromManager <- b.Param(dev.pids.record2track, dev.id, b.Bool(true))
+	waitFor(t, "second RECTOGGLE after window", func() bool {
+		return countCmd(conn.written(), "RECTOGGLE") == 2
+	})
+}
+
+// TestRecordGuardResetOnDisconnect proves the guard does not survive a power
+// cycle: after arming it and disconnecting, a fresh press on the new connection
+// behaves normally (sends immediately).
+func TestRecordGuardResetOnDisconnect(t *testing.T) {
+	dialer := newMockDialer()
+	dev, fromManager, toManager := newTestDevice(t, dialer.dial, withRealWireMapping(t))
+
+	conn1 := newMockConn()
+	dialer.queueConn(conn1)
+	awaitConnection(t, toManager, true)
+
+	fromManager <- b.Param(dev.pids.record2track, dev.id, b.Bool(true))
+	waitFor(t, "guard armed by first press", func() bool {
+		return countCmd(conn1.written(), "RECTOGGLE") == 1
+	})
+
+	conn1.Close()
+	awaitConnection(t, toManager, false)
+
+	conn2 := newMockConn()
+	dialer.queueConn(conn2)
+	awaitConnection(t, toManager, true)
+	// Drain remaining confirms only after the reconnect is observed, so the
+	// awaitConnection calls above see the transitions the drain would eat.
+	stop := make(chan struct{})
+	defer close(stop)
+	drainToManager(toManager, stop)
+
+	// A press right after reconnect must not be swallowed by a stale guard.
+	fromManager <- b.Param(dev.pids.record2track, dev.id, b.Bool(true))
+	waitFor(t, "RECTOGGLE after reconnect", func() bool {
+		return countCmd(conn2.written(), "RECTOGGLE") == 1
+	})
+}
+
+// TestRecordInboundForwardsToManager pushes var.isRecording and var.recBusy
+// through the session and asserts they reach toManager as the record parameters.
+func TestRecordInboundForwardsToManager(t *testing.T) {
+	dialer := newMockDialer()
+	dev, _, toManager := newTestDevice(t, dialer.dial, withRealWireMapping(t))
+
+	conn := newMockConn()
+	dialer.queueConn(conn)
+	awaitConnection(t, toManager, true)
+
+	conn.frames <- "3:::SETD^var.isRecording^1\nSETD^var.recBusy^1"
+
+	want := map[uint32]bool{dev.pids.record2track: false, dev.pids.recordBusy: false}
+	deadline := time.After(2 * time.Second)
+	for {
+		done := true
+		for _, seen := range want {
+			if !seen {
+				done = false
+			}
+		}
+		if done {
+			break
+		}
+		select {
+		case p := <-toManager:
+			if _, ok := want[p.Id.Parameter]; ok {
+				if !p.Value[0].GetBinary() {
+					t.Errorf("parameter %d value = false, want true", p.Id.Parameter)
+				}
+				want[p.Id.Parameter] = true
+			}
+		case <-deadline:
+			t.Fatalf("timed out; record params seen = %v", want)
+		}
+	}
+
+	if got := countSETD(conn.written(), "SETD^"); got != 0 {
+		t.Errorf("inbound produced %d outbound SETD frames, want 0", got)
+	}
 }
 
 func countSETD(writes []string, prefix string) int {

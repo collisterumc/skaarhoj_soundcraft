@@ -232,24 +232,37 @@ feedback was proven with a second WebSocket client instead.
 
 ## 6. Feature: USB recording start/stop (with feedback)
 
-- [ ] Parameters: `record_2track` toggle (Binary, Normal, NormalFeedback — per G0
+- [x] Parameters: `record_2track` toggle (Binary, Normal, NormalFeedback — per G0
       decision; button displays actual state), plus read-only `record_busy`
-- [ ] Outbound: send `RECTOGGLE` when target differs from current state (symmetric —
-      handles both start and stop); tentatively suppress while `var.recBusy`=1 (guards
-      against retry double-fire during the start/stop transition; semantics verified in
-      milestone 2 — see IMPLEMENTATION.md §5); race window accepted (matches mixer's own
-      UI behavior)
-- [ ] Inbound: `var.isRecording`, `var.recBusy` → current values
-- [ ] (Ui24R stretch) `MTK_REC_TOGGLE` + `var.mtk.rec.currentState`, `var.mtk.rec.busy`,
-      `var.mtk.rec.time`; parameters registered only for the Ui24R model
+- [x] Outbound: send `RECTOGGLE` when target differs from current state (symmetric —
+      handles both start and stop); after sending, run the core-side in-flight guard —
+      ignore further toggles until `var.isRecording` reaches the target or ~2 s elapses.
+      This REPLACED the planned `var.recBusy`=1 suppression, which milestone 2 proved
+      cannot cover the ~206 ms command-to-state race (§9, Decision log 2026-08-23). Race
+      window accepted (matches the mixer's own UI behavior)
+- [x] Inbound: `var.isRecording`, `var.recBusy` → current values
+- [x] (Ui24R stretch) `MTK_REC_TOGGLE` + `var.mtk.rec.currentState`, `var.mtk.rec.busy`,
+      `var.mtk.rec.time`; parameters registered only for the Ui24R model — implemented
+      from spec, untested on hardware (no Ui24R)
 
 **Gate G6 (agent-assertable):**
-- [ ] Unit tests: state-gated toggle logic (no `RECTOGGLE` sent when already in target
-      state; exactly one sent otherwise; busy state suppresses sends)
-- [ ] Integration: start via core → mixer records (web UI confirms + `var.isRecording`=1);
-      stop via core → recording stops; toggling from mixer web UI updates core state
-- [ ] Model gating: multitrack parameters absent for Ui12/Ui16 models in gRPC
-      ParameterDetail listing
+- [x] Unit tests: state-gated toggle logic (no `RECTOGGLE` sent when already in target
+      state; exactly one sent otherwise; a second toggle inside the in-flight window is
+      suppressed; the window expires or a matching `var.isRecording` clears the guard and
+      a subsequent write sends again; guard resets on disconnect)
+- [x] Integration: start via core → mixer records (`var.isRecording`=1); stop via core →
+      recording stops; external toggles update core state — verified 2026-08-23 against
+      the Ui16: exactly one `RECTOGGLE` per intent (a rapid triple-press produced one),
+      confirm at ~123 ms, the `record_busy` stop pulse observed, no MaxRetrys errors,
+      and an external stop 1.29 s after a core press was accepted with no re-fight
+      (validates `QuarantineDelayMs` = 0). Ended with `var.isRecording`=0 verified from a
+      fresh connection. The "web UI" legs were proxied through a second WebSocket client
+      (milestone-2 precedent); Reactor-in-the-loop behavior remains for milestone 7's
+      end-to-end test
+- [x] Model gating: multitrack parameters absent for Ui12/Ui16 models in gRPC
+      ParameterDetail listing — asserted in unit tests via corelib's per-model
+      `GetParameterDetail` and confirmed 2026-08-23 in the live gRPC listing of the
+      running core (absent for Ui12/Ui16, present for Ui24R)
 
 ---
 

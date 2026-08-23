@@ -9,7 +9,7 @@ import (
 )
 
 // modelSpec holds per-model registration data and channel counts
-// (IMPLEMENTATION.md §2.6). The counts size the channel dimensions of the
+// (from soundcraft-ui's device capabilities). The counts size the channel dimensions of the
 // mute/fader parameters in later milestones.
 type modelSpec struct {
 	id          uint32
@@ -100,7 +100,7 @@ func configureParameters(r *ib.IBeamParameterRegistry) {
 			ValueType:     pb.ValueType_Binary,
 			DefaultValue:  b.Bool(false),
 			// Optimistic confirm handles the missing echo; retry guards a lost
-			// write, which the mixer never validates or acknowledges (§2.7, §9).
+			// write, which the mixer never validates or acknowledges.
 			RetryCount:     2,
 			ControlDelayMs: 50,
 			Dimensions:     []*pb.DimensionDetail{dim},
@@ -118,7 +118,7 @@ func configureParameters(r *ib.IBeamParameterRegistry) {
 			Minimum:       0,
 			Maximum:       1,
 			// Other clients push floats at ~9 decimals; the threshold clears our
-			// assumed state on a matching push (§2.7).
+			// assumed state on a matching push.
 			AcceptanceThreshold:   0.001,
 			FineSteps:             0.005,
 			CoarseSteps:           0.05,
@@ -183,6 +183,111 @@ func configureParameters(r *ib.IBeamParameterRegistry) {
 		RetryCount:            2,
 		ControlDelayMs:        50,
 	})
+
+	configureRecordingParameters(r)
+}
+
+// configureRecordingParameters registers the 2-track recorder parameters (all
+// models) and the Ui24R-only multitrack parameters.
+func configureRecordingParameters(r *ib.IBeamParameterRegistry) {
+	// record_2track is a toggle whose button shows the actual var.isRecording
+	// state. The core never optimistically confirms it — that would lie during
+	// the ~206 ms the mixer takes to report the new state — so ControlDelayMs
+	// must exceed that latency: at 300 ms the confirm beats the first corelib
+	// retry and a normal press fires once, with no MaxRetrys error. RetryCount 0
+	// is rejected by corelib validation for Normal+NormalFeedback. QuarantineDelayMs
+	// stays 0: a nonzero value makes corelib reject an external stop/start inside
+	// the window, re-fighting a tablet operator. recordGuard suppresses
+	// re-presses and any retry that does fire.
+	r.RegisterParameter(&pb.ParameterDetail{
+		Path:           "record",
+		Name:           "record_2track",
+		Label:          "Record",
+		ShortLabel:     "Rec",
+		Description:    "Start/stop the 2-track USB recording (toggle; shows the mixer's actual recording state)",
+		ControlStyle:   pb.ControlStyle_Normal,
+		FeedbackStyle:  pb.FeedbackStyle_NormalFeedback,
+		ValueType:      pb.ValueType_Binary,
+		DefaultValue:   b.Bool(false),
+		RetryCount:     2,
+		ControlDelayMs: 300,
+	}, ib.WithDefaultValid())
+
+	// record_busy mirrors var.recBusy for display only. Nothing gates on it: on
+	// hardware it never fires on start and pulses ~76 ms on stop, so it cannot
+	// cover the ~206 ms command-to-state race (measured on hardware).
+	r.RegisterParameter(&pb.ParameterDetail{
+		Path:          "record",
+		Name:          "record_busy",
+		Label:         "Recording Busy",
+		ShortLabel:    "Busy",
+		Description:   "Mixer 2-track recording busy flag (read-only; does not cover the start/stop race)",
+		ControlStyle:  pb.ControlStyle_NoControl,
+		FeedbackStyle: pb.FeedbackStyle_NormalFeedback,
+		ValueType:     pb.ValueType_Binary,
+		DefaultValue:  b.Bool(false),
+	}, ib.WithDefaultValid())
+
+	// Multitrack recording is Ui24R-only. Gate on the model, never on
+	// var.mtk.present: a Ui16 falsely reports it as 1 (measured on hardware).
+	// These are implemented from spec and untested on hardware (no Ui24R on hand).
+	ui24r := ui24rModelIDs()
+	if len(ui24r) == 0 {
+		return
+	}
+
+	r.RegisterParameterForModels(ui24r, &pb.ParameterDetail{
+		Path:          "record",
+		Name:          "record_multitrack",
+		Label:         "Multitrack Record",
+		ShortLabel:    "MTK Rec",
+		Description:   "Start/stop the Ui24R multitrack recording (toggle; untested on hardware)",
+		ControlStyle:  pb.ControlStyle_Normal,
+		FeedbackStyle: pb.FeedbackStyle_NormalFeedback,
+		ValueType:     pb.ValueType_Binary,
+		DefaultValue:  b.Bool(false),
+		// var.mtk.rec.currentState is a plain 0/1 boolean in soundcraft-ui
+		// (selectBoolean), not the MtkState player enum, so it maps directly.
+		// Timing mirrors record_2track (QuarantineDelayMs left 0); the mtk confirm
+		// latency is untested on hardware.
+		RetryCount:     2,
+		ControlDelayMs: 300,
+	}, ib.WithDefaultValid())
+
+	r.RegisterParameterForModels(ui24r, &pb.ParameterDetail{
+		Path:          "record",
+		Name:          "multitrack_busy",
+		Label:         "Multitrack Busy",
+		ShortLabel:    "MTK Busy",
+		Description:   "Ui24R multitrack recording busy flag (read-only; untested on hardware)",
+		ControlStyle:  pb.ControlStyle_NoControl,
+		FeedbackStyle: pb.FeedbackStyle_NormalFeedback,
+		ValueType:     pb.ValueType_Binary,
+		DefaultValue:  b.Bool(false),
+	}, ib.WithDefaultValid())
+
+	r.RegisterParameterForModels(ui24r, &pb.ParameterDetail{
+		Path:          "record",
+		Name:          "multitrack_time",
+		Label:         "Multitrack Time",
+		ShortLabel:    "MTK Time",
+		Description:   "Ui24R multitrack recording elapsed time (read-only; untested on hardware)",
+		ControlStyle:  pb.ControlStyle_NoControl,
+		FeedbackStyle: pb.FeedbackStyle_NormalFeedback,
+		ValueType:     pb.ValueType_String,
+		DefaultValue:  b.String(""),
+	}, ib.WithDefaultValid())
+}
+
+// ui24rModelIDs lists the model IDs that carry a multitrack recorder.
+func ui24rModelIDs() []uint32 {
+	var ids []uint32
+	for _, m := range models {
+		if m.multitrack {
+			ids = append(ids, m.id)
+		}
+	}
+	return ids
 }
 
 // channelDimension builds the 1-based channel dimension for a model: inputs

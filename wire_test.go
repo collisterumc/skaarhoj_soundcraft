@@ -28,18 +28,25 @@ func wireTestDevice(t *testing.T) *device {
 	t.Helper()
 	r := testRegistry(t)
 	d := &device{
-		id:        1,
-		inputs:    12, // Ui16
-		line:      2,
-		store:     newStateStore(),
-		snapshots: newSnapshotCache(),
+		id:                    1,
+		inputs:                12, // Ui16
+		line:                  2,
+		store:                 newStateStore(),
+		snapshots:             newSnapshotCache(),
+		record2trackGuard:     newRecordGuard(recordGuardTimeout),
+		recordMultitrackGuard: newRecordGuard(recordGuardTimeout),
 		pids: mixerPIDs{
-			channelMute:     r.PID("channel_mute"),
-			channelFader:    r.PID("channel_fader"),
-			masterFader:     r.PID("master_fader"),
-			snapshotUp:      r.PID("snapshot_up"),
-			snapshotDown:    r.PID("snapshot_down"),
-			currentSnapshot: r.PID("current_snapshot"),
+			channelMute:      r.PID("channel_mute"),
+			channelFader:     r.PID("channel_fader"),
+			masterFader:      r.PID("master_fader"),
+			snapshotUp:       r.PID("snapshot_up"),
+			snapshotDown:     r.PID("snapshot_down"),
+			currentSnapshot:  r.PID("current_snapshot"),
+			record2track:     r.PID("record_2track"),
+			recordBusy:       r.PID("record_busy"),
+			recordMultitrack: r.PIDByModel("record_multitrack", 3),
+			multitrackBusy:   r.PIDByModel("multitrack_busy", 3),
+			multitrackTime:   r.PIDByModel("multitrack_time", 3),
 		},
 	}
 	if d.pids.channelMute == 0 || d.pids.channelFader == 0 || d.pids.masterFader == 0 {
@@ -182,6 +189,124 @@ func TestFloatWireFormat(t *testing.T) {
 		}
 	}
 }
+
+// TestRecordInboundMapping checks the recording state keys map to the right
+// parameters, including the Ui24R-only multitrack keys (wireTestDevice resolves
+// their PIDs via model 3).
+func TestRecordInboundMapping(t *testing.T) {
+	d := wireTestDevice(t)
+
+	cases := []struct {
+		path, value string
+		wantPID     uint32
+		checkBool   *bool
+		checkStr    string
+	}{
+		{"var.isRecording", "1", d.pids.record2track, boolp(true), ""},
+		{"var.isRecording", "0", d.pids.record2track, boolp(false), ""},
+		{"var.recBusy", "1", d.pids.recordBusy, boolp(true), ""},
+		{"var.mtk.rec.currentState", "1", d.pids.recordMultitrack, boolp(true), ""},
+		{"var.mtk.rec.busy", "1", d.pids.multitrackBusy, boolp(true), ""},
+		{"var.mtk.rec.time", "00:23", d.pids.multitrackTime, nil, "00:23"},
+	}
+	for _, c := range cases {
+		p := d.inboundParameter(c.path, c.value)
+		if p == nil {
+			t.Errorf("%s^%s: no parameter produced", c.path, c.value)
+			continue
+		}
+		if p.Id.Parameter != c.wantPID {
+			t.Errorf("%s: PID %d, want %d", c.path, p.Id.Parameter, c.wantPID)
+		}
+		if c.checkBool != nil && p.Value[0].GetBinary() != *c.checkBool {
+			t.Errorf("%s^%s: bool %v, want %v", c.path, c.value, p.Value[0].GetBinary(), *c.checkBool)
+		}
+		if c.checkStr != "" && p.Value[0].GetStr() != c.checkStr {
+			t.Errorf("%s^%s: string %q, want %q", c.path, c.value, p.Value[0].GetStr(), c.checkStr)
+		}
+	}
+}
+
+// TestRecordToggleWireConstruction covers both toggle commands: with no observed
+// state yet, a first press sends the bare toggle command exactly once.
+func TestRecordToggleWireConstruction(t *testing.T) {
+	d := wireTestDevice(t)
+
+	got := d.buildWireMessages(b.Param(d.pids.record2track, d.id, b.Bool(true)))
+	if len(got) != 1 || got[0] != "RECTOGGLE" {
+		t.Errorf("record_2track start → %v, want [RECTOGGLE]", got)
+	}
+
+	got = d.buildWireMessages(b.Param(d.pids.recordMultitrack, d.id, b.Bool(true)))
+	if len(got) != 1 || got[0] != "MTK_REC_TOGGLE" {
+		t.Errorf("record_multitrack start → %v, want [MTK_REC_TOGGLE]", got)
+	}
+}
+
+// TestRecordToggleStateGated proves the observed recording state gates the send:
+// a target already matching the mixer's reported state sends nothing.
+func TestRecordToggleStateGated(t *testing.T) {
+	d := wireTestDevice(t)
+	d.record2trackGuard.observe(true) // mixer reports recording
+
+	if got := d.buildWireMessages(b.Param(d.pids.record2track, d.id, b.Bool(true))); len(got) != 0 {
+		t.Errorf("target==current should send nothing, got %v", got)
+	}
+	// A differing target sends one RECTOGGLE.
+	if got := d.buildWireMessages(b.Param(d.pids.record2track, d.id, b.Bool(false))); len(got) != 1 || got[0] != "RECTOGGLE" {
+		t.Errorf("target!=current → %v, want [RECTOGGLE]", got)
+	}
+}
+
+// TestRecordConfirmWriteSkipped confirms record toggles are never optimistically
+// confirmed: the mixer broadcasts var.isRecording back to the sender, so a local
+// confirm would lie during the ~206 ms transition.
+func TestRecordConfirmWriteSkipped(t *testing.T) {
+	d := wireTestDevice(t)
+	if p := d.confirmWrite(b.Param(d.pids.record2track, d.id, b.Bool(true))); p != nil {
+		t.Errorf("record_2track must not be optimistically confirmed, got %+v", p)
+	}
+	if p := d.confirmWrite(b.Param(d.pids.recordMultitrack, d.id, b.Bool(true))); p != nil {
+		t.Errorf("record_multitrack must not be optimistically confirmed, got %+v", p)
+	}
+}
+
+// TestMultitrackModelGating asserts the multitrack parameters exist only for the
+// Ui24R model. This is the strongest unit-level check corelib allows via
+// GetParameterDetail; the live gRPC ParameterDetail listing (Gate G6) must still
+// confirm the same absence over the wire.
+func TestMultitrackModelGating(t *testing.T) {
+	r := testRegistry(t)
+
+	for _, name := range []string{"record_multitrack", "multitrack_busy", "multitrack_time"} {
+		pid := r.PID(name) // global name→ID; nonzero once registered for any model
+		if pid == 0 {
+			t.Fatalf("%s not registered for any model", name)
+		}
+		// Present on Ui24R (model 3).
+		if _, err := r.GetParameterDetail(pid, 3); err != nil {
+			t.Errorf("%s missing for Ui24R: %v", name, err)
+		}
+		// Absent on Ui12 (1) and Ui16 (2).
+		for _, modelID := range []uint32{1, 2} {
+			if _, err := r.GetParameterDetail(pid, modelID); err == nil {
+				t.Errorf("%s must be absent for model %d", name, modelID)
+			}
+		}
+	}
+
+	// The 2-track parameters exist on every model.
+	for _, name := range []string{"record_2track", "record_busy"} {
+		pid := r.PID(name)
+		for _, modelID := range []uint32{1, 2, 3} {
+			if _, err := r.GetParameterDetail(pid, modelID); err != nil {
+				t.Errorf("%s missing for model %d: %v", name, modelID, err)
+			}
+		}
+	}
+}
+
+func boolp(v bool) *bool { return &v }
 
 func dimEqual(a, b []uint32) bool {
 	if len(a) != len(b) {

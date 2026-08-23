@@ -12,7 +12,7 @@ import (
 	log "github.com/s00500/env_logger"
 )
 
-// Device loop per IMPLEMENTATION.md §5. The SKAARHOJ routinely cuts mixer
+// Device loop. The SKAARHOJ routinely cuts mixer
 // power, so disconnects are normal operation: reconnect forever with 2 s
 // backoff, detect dead links with a read deadline (a power cut sends no FIN),
 // and log connection transitions once, not per retry.
@@ -91,15 +91,22 @@ func buildDevices(r *ib.IBeamParameterRegistry, config CoreConfig, toManager cha
 			toManager:   toManager,
 			fromManager: make(chan *pb.Parameter, 10),
 			pids: mixerPIDs{
-				channelMute:     r.PID("channel_mute"),
-				channelFader:    r.PID("channel_fader"),
-				masterFader:     r.PID("master_fader"),
-				snapshotUp:      r.PID("snapshot_up"),
-				snapshotDown:    r.PID("snapshot_down"),
-				currentSnapshot: r.PID("current_snapshot"),
+				channelMute:      r.PID("channel_mute"),
+				channelFader:     r.PID("channel_fader"),
+				masterFader:      r.PID("master_fader"),
+				snapshotUp:       r.PID("snapshot_up"),
+				snapshotDown:     r.PID("snapshot_down"),
+				currentSnapshot:  r.PID("current_snapshot"),
+				record2track:     r.PID("record_2track"),
+				recordBusy:       r.PID("record_busy"),
+				recordMultitrack: r.PIDByModel("record_multitrack", dc.ModelID),
+				multitrackBusy:   r.PIDByModel("multitrack_busy", dc.ModelID),
+				multitrackTime:   r.PIDByModel("multitrack_time", dc.ModelID),
 			},
-			inputs: ch.inputs,
-			line:   ch.line,
+			record2trackGuard:     newRecordGuard(recordGuardTimeout),
+			recordMultitrackGuard: newRecordGuard(recordGuardTimeout),
+			inputs:                ch.inputs,
+			line:                  ch.line,
 		}
 		dev.wireMessages = dev.buildWireMessages
 		devices[dc.DeviceID] = dev
@@ -116,22 +123,37 @@ type mixerPIDs struct {
 	snapshotUp      uint32
 	snapshotDown    uint32
 	currentSnapshot uint32
+	record2track    uint32
+	recordBusy      uint32
+	// Multitrack PIDs are 0 on non-Ui24R models (parameter not registered).
+	recordMultitrack uint32
+	multitrackBusy   uint32
+	multitrackTime   uint32
 }
 
+// recordGuardTimeout backstops the in-flight guard if the mixer never reports
+// the recording state (e.g. no USB stick). Comfortably past the measured ~206 ms
+// command-to-state latency.
+const recordGuardTimeout = 2 * time.Second
+
 type device struct {
-	id           uint32
-	ip           string
-	dial         dialFunc
-	timing       loopTiming
-	store        *stateStore
-	snapshots    *snapshotCache
-	connPID      uint32
-	pids         mixerPIDs
-	inputs       int // input channels; the channel dimension splits i.<n> from l.<n> here
-	line         int // line-in channels; bounds the l.<n> range on inbound paths
-	toManager    chan<- *pb.Parameter
-	fromManager  chan *pb.Parameter           // per-device slice of the manager's output
-	wireMessages func(*pb.Parameter) []string // parameter→protocol translation; a seam like dial
+	id        uint32
+	ip        string
+	dial      dialFunc
+	timing    loopTiming
+	store     *stateStore
+	snapshots *snapshotCache
+	connPID   uint32
+	pids      mixerPIDs
+	// In-flight guards, one per recording toggle, absorb corelib retry
+	// double-fires until the mixer confirms the new state (see recordGuard).
+	record2trackGuard     *recordGuard
+	recordMultitrackGuard *recordGuard
+	inputs                int // input channels; the channel dimension splits i.<n> from l.<n> here
+	line                  int // line-in channels; bounds the l.<n> range on inbound paths
+	toManager             chan<- *pb.Parameter
+	fromManager           chan *pb.Parameter           // per-device slice of the manager's output
+	wireMessages          func(*pb.Parameter) []string // parameter→protocol translation; a seam like dial
 
 	mu  sync.Mutex
 	out chan<- string // session outbound queue; nil while disconnected
@@ -202,6 +224,16 @@ func (d *device) session(ctx context.Context, conn wsConn) {
 	sctx, cancel := context.WithCancel(ctx)
 	defer cancel()
 
+	// Clear the record guards at session start as well as on disconnect. The
+	// disconnect clear can race a pumpFromManager iteration that arms a guard just
+	// after cleanup; clearing here guarantees each session begins clean.
+	if d.record2trackGuard != nil {
+		d.record2trackGuard.clear()
+	}
+	if d.recordMultitrackGuard != nil {
+		d.recordMultitrackGuard.clear()
+	}
+
 	// Install the outbound queue before reporting connection=1: once Reactor
 	// sees connected, a fromManager write must reach the wire, not the
 	// disconnected-discard path.
@@ -215,7 +247,7 @@ func (d *device) session(ctx context.Context, conn wsConn) {
 
 	// Request the show list so the snapshot cache can be rebuilt from the current
 	// show's SNAPSHOTLIST. The mixer never replies to an unknown command, so a
-	// silent SHOWLIST simply leaves the cache empty (IMPLEMENTATION.md §5).
+	// silent SHOWLIST simply leaves the cache empty.
 	d.send("SHOWLIST")
 
 	// Single writer goroutine: websocket conns are not concurrent-write-safe.
@@ -273,6 +305,12 @@ func (d *device) session(ctx context.Context, conn wsConn) {
 
 	d.store.clear()     // no stale state may survive a power cycle
 	d.snapshots.clear() // the cache must not survive a power cycle either
+	if d.record2trackGuard != nil {
+		d.record2trackGuard.clear()
+	}
+	if d.recordMultitrackGuard != nil {
+		d.recordMultitrackGuard.clear()
+	}
 	d.reportConnection(false)
 	log.Warnf("Device %d: mixer %s disconnected (connection=0)", d.id, d.ip)
 }
@@ -293,7 +331,7 @@ func (d *device) ingest(line string) bool {
 		}
 		d.store.set(msg.path, msg.value)
 		// Map recognized paths to current values. Inbound traffic never triggers
-		// a wire send — only fromManager writes go out (§2.7).
+		// a wire send — only fromManager writes go out.
 		if p := d.inboundParameter(msg.path, msg.value); p != nil {
 			d.toManager <- p
 		}
@@ -326,7 +364,7 @@ func (d *device) requestSnapshotList(show string) {
 // disconnected, writes are discarded, never queued: replaying stale commands
 // at mixer power-on would be surprising and potentially harmful. This stage is
 // also where per-device outbound logic will live — e.g. the recording
-// in-flight guard of the record milestone (IMPLEMENTATION.md §5) — which is
+// in-flight guard of the record milestone — which is
 // why it exists separately rather than being folded into the fan-out.
 func (d *device) pumpFromManager(ctx context.Context) {
 	for {
@@ -350,7 +388,7 @@ func (d *device) pumpFromManager(ctx context.Context) {
 				}
 			}
 			// Optimistic confirm: the mixer never echoes a write, so feed the
-			// sent value back as current now (Decision 2026-08-23). Confirm
+			// sent value back as current now. Confirm
 			// only after a wire message actually went out, so an unmapped
 			// parameter confirms nothing.
 			if len(msgs) > 0 {

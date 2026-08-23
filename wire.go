@@ -10,11 +10,11 @@ import (
 	log "github.com/s00500/env_logger"
 )
 
-// Wire mapping for the mute/fader milestone (IMPLEMENTATION.md §2.4). Wire
+// Wire mapping between corelib parameters and mixer messages. Wire
 // indices are 0-based; the channel dimension is 1-based. Dimension index
 // 1..inputs maps to i.<n-1>; inputs+1.. maps to l.<n-inputs-1>. The mixer never
 // validates values, so the core clamps floats to [0,1] and sends booleans as
-// exactly 0 or 1 (Decision 2026-08-23).
+// exactly 0 or 1.
 
 // buildWireMessages translates one fromManager parameter into wire lines.
 func (d *device) buildWireMessages(param *pb.Parameter) []string {
@@ -23,6 +23,13 @@ func (d *device) buildWireMessages(param *pb.Parameter) []string {
 		return d.snapshotStepMessages(1)
 	case d.pids.snapshotDown:
 		return d.snapshotStepMessages(-1)
+	case d.pids.record2track:
+		return d.recordToggleMessages(d.record2trackGuard, "RECTOGGLE", param)
+	}
+	// Multitrack is matched outside the switch: on non-Ui24R models its PID is 0,
+	// and a 0 case label would swallow an unrelated ID-0 parameter.
+	if d.pids.recordMultitrack != 0 && param.Id.Parameter == d.pids.recordMultitrack {
+		return d.recordToggleMessages(d.recordMultitrackGuard, "MTK_REC_TOGGLE", param)
 	}
 
 	var msgs []string
@@ -49,7 +56,7 @@ func (d *device) buildWireMessages(param *pb.Parameter) []string {
 // snapshotStepMessages resolves a snapshot up/down trigger to a single
 // LOADSNAPSHOT line. delta is +1 for next, -1 for previous. An empty cache or a
 // current snapshot outside the cached list is a logged no-op, so a trigger with
-// nothing to load sends nothing (IMPLEMENTATION.md §4).
+// nothing to load sends nothing.
 func (d *device) snapshotStepMessages(delta int) []string {
 	show, items := d.snapshots.snapshot()
 	if len(items) == 0 {
@@ -63,6 +70,24 @@ func (d *device) snapshotStepMessages(delta int) []string {
 		return nil
 	}
 	return []string{"LOADSNAPSHOT^" + show + "^" + target}
+}
+
+// recordToggleMessages resolves a recording toggle to at most one toggle-only
+// command: it sends only when the target differs from the mixer's current
+// recording state, and recordGuard suppresses everything else.
+func (d *device) recordToggleMessages(guard *recordGuard, cmd string, param *pb.Parameter) []string {
+	if guard == nil || len(param.Value) == 0 {
+		return nil
+	}
+	target := param.Value[0].GetBinary()
+	if !guard.tryToggle(target) {
+		log.Debugf("Device %d: %s suppressed (target=%v, guard in flight or already in state)", d.id, cmd, target)
+		return nil
+	}
+	// tryToggle arms the guard here. If the caller then drops this command (full
+	// outbound queue), the guard stays armed until its timeout, delaying the next
+	// press by that window rather than double-firing — the safe failure.
+	return []string{cmd}
 }
 
 // wirePath resolves the channel path stem (e.g. "i.2", "l.0", "m") for a
@@ -92,8 +117,8 @@ func channelPath(dim, inputs int) (string, bool) {
 
 // confirmWrite returns the optimistic-confirm parameter for a fromManager
 // write: the sent value fed straight back as current. The mixer never echoes a
-// write, so waiting for feedback would leave the value assumed forever
-// (Decision 2026-08-23). Returns nil for parameters with no wire mapping.
+// write, so waiting for feedback would leave the value assumed forever.
+// Returns nil for parameters with no wire mapping.
 func (d *device) confirmWrite(param *pb.Parameter) *pb.Parameter {
 	switch param.Id.Parameter {
 	case d.pids.channelMute, d.pids.channelFader, d.pids.masterFader:
@@ -133,6 +158,10 @@ func (d *device) inboundParameter(path, value string) *pb.Parameter {
 		return b.Param(d.pids.currentSnapshot, d.id, b.String(value))
 	}
 
+	if p := d.recordInbound(path, value); p != nil {
+		return p
+	}
+
 	typ, rest, ok := strings.Cut(path, ".")
 	if !ok || (typ != "i" && typ != "l") {
 		return nil
@@ -167,6 +196,52 @@ func (d *device) inboundParameter(path, value string) *pb.Parameter {
 	return nil
 }
 
+// recordInbound maps the recording state keys to their current values. It also
+// feeds var.isRecording / var.mtk.rec.currentState to the matching in-flight
+// guard, so a command clears its guard early once the mixer confirms the new
+// state (see recordGuard). The mtk keys only map when their parameters are
+// registered (Ui24R), so a stray mtk push on another model is ignored.
+func (d *device) recordInbound(path, value string) *pb.Parameter {
+	switch path {
+	case "var.isRecording":
+		on, ok := parseBool(value)
+		if !ok {
+			return nil
+		}
+		if d.record2trackGuard != nil {
+			d.record2trackGuard.observe(on)
+		}
+		return b.Param(d.pids.record2track, d.id, b.Bool(on))
+	case "var.recBusy":
+		on, ok := parseBool(value)
+		if !ok {
+			return nil
+		}
+		return b.Param(d.pids.recordBusy, d.id, b.Bool(on))
+	case "var.mtk.rec.currentState":
+		on, ok := parseBool(value)
+		if !ok || d.pids.recordMultitrack == 0 {
+			return nil
+		}
+		if d.recordMultitrackGuard != nil {
+			d.recordMultitrackGuard.observe(on)
+		}
+		return b.Param(d.pids.recordMultitrack, d.id, b.Bool(on))
+	case "var.mtk.rec.busy":
+		on, ok := parseBool(value)
+		if !ok || d.pids.multitrackBusy == 0 {
+			return nil
+		}
+		return b.Param(d.pids.multitrackBusy, d.id, b.Bool(on))
+	case "var.mtk.rec.time":
+		if d.pids.multitrackTime == 0 {
+			return nil
+		}
+		return b.Param(d.pids.multitrackTime, d.id, b.String(value))
+	}
+	return nil
+}
+
 // channelDim maps a wire type and 0-based index back to the 1-based channel
 // dimension. Returns 0 for an index outside the configured range.
 func (d *device) channelDim(typ string, wireIdx int) uint32 {
@@ -195,11 +270,11 @@ func parseFloat(s string) (float64, bool) {
 	return f, true
 }
 
-// parseBool reads a mixer boolean. The mixer stores non-0/1 numbers verbatim
-// (§9), so treat any nonzero numeric as true and reject non-numeric.
+// parseBool reads a mixer boolean. The mixer stores non-0/1 numbers verbatim,
+// so treat any nonzero numeric as true and reject non-numeric or non-finite.
 func parseBool(s string) (bool, bool) {
 	f, err := strconv.ParseFloat(s, 64)
-	if err != nil || math.IsNaN(f) {
+	if err != nil || math.IsNaN(f) || math.IsInf(f, 0) {
 		return false, false
 	}
 	return f != 0, true
