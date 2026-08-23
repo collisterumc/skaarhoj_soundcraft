@@ -3,8 +3,7 @@ package main
 import "sync"
 
 // stateStore mirrors the mixer's SETD/SETS state as a flat path→value map.
-// It is cleared on disconnect so no stale state survives a power cycle
-// (IMPLEMENTATION.md §5).
+// It is cleared on disconnect so no stale state survives a power cycle.
 type stateStore struct {
 	mu sync.RWMutex
 	m  map[string]string

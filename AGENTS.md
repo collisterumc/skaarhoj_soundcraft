@@ -45,6 +45,13 @@ Project documentation:
 | [TODO.md](TODO.md) | Milestone checklists with agent-assertable gates |
 | [IMPLEMENTATION.md](IMPLEMENTATION.md) | Architecture, protocol reference, design decisions, decision log |
 
+IMPLEMENTATION.md is a development-time document: it gets deleted when the app is done.
+Never cite it from anything that outlives development — a code comment must state its
+constraint or reason in full, not point at IMPLEMENTATION.md or a decision-log entry for
+it. When the project wraps up, move anything still needed long-term (the licensing
+decision, protocol facts a maintainer would miss, deployment details) into README.md
+before deleting it.
+
 Document directory hierarchy, not individual filenames. Don't list specific counts,
 file-by-file breakdowns, data sizes, or row counts — these go stale when data changes.
 When counts are necessary, note the date they were captured.

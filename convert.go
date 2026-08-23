@@ -3,8 +3,8 @@ package main
 import "math"
 
 // Fader value conversions ported from soundcraft-ui
-// (packages/mixer-connection/src/lib/utils/value-converters/value-converters.ts,
-// also reproduced in IMPLEMENTATION.md §2.5). Wire fader values are linear
+// (packages/mixer-connection/src/lib/utils/value-converters/value-converters.ts).
+// Wire fader values are linear
 // positions 0.0–1.0; these map between that position and a dB reading for
 // display labels.
 

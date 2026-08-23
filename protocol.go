@@ -4,7 +4,7 @@ import "strings"
 
 // Soundcraft Ui wire codec. The framing is a Socket.IO-0.9 remnant: logical
 // messages travel prefixed "3:::"; "1::"/"2::" frames are handshake/heartbeat
-// noise. Validated on Ui16 hardware — IMPLEMENTATION.md §2.1, §9.
+// noise. Validated on Ui16 hardware (firmware 1.0.7548-ui16, 2026-08-23).
 
 const framePrefix = "3:::"
 
@@ -40,7 +40,7 @@ func parseMessage(line string) (message, bool) {
 	switch kind {
 	case "SETD", "SETS":
 		// The path sits between the first two separators; the value is the
-		// remainder and may itself contain '^' (IMPLEMENTATION.md §2.2).
+		// remainder and may itself contain '^'.
 		path, value, found := strings.Cut(rest, "^")
 		if !found || path == "" {
 			return message{}, false
@@ -55,7 +55,7 @@ func parseMessage(line string) (message, bool) {
 	}
 }
 
-// listReply is a parsed list-reply message (IMPLEMENTATION.md §2.2). Flat lists
+// listReply is a parsed list-reply message. Flat lists
 // (SHOWLIST) carry only items and an empty key. Keyed lists (SNAPSHOTLIST^show)
 // carry the key plus items. The empty form is a trailing separator
 // (SNAPSHOTLIST^show^ or SHOWLIST^) and yields no items. List fields are

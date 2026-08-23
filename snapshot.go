@@ -4,8 +4,8 @@ import "sync"
 
 // snapshotCache holds the SNAPSHOTLIST reply for the current show. The device
 // loop rebuilds it on connect and on every var.currentShow change, and clears
-// it on disconnect so no stale list survives a power cycle (IMPLEMENTATION.md
-// §5). The mixer never replies to an unknown command, so the cache tolerates a
+// it on disconnect so no stale list survives a power cycle. The mixer never
+// replies to an unknown command, so the cache tolerates a
 // SNAPSHOTLIST reply that never arrives: it simply stays empty and up/down
 // become logged no-ops.
 type snapshotCache struct {
@@ -54,7 +54,7 @@ func (c *snapshotCache) snapshot() (show string, items []string) {
 // stepSnapshot returns the snapshot adjacent to current in items, wrapping at
 // both ends. delta is +1 for next, -1 for previous. ok is false when the list
 // is empty or current is not in it, so the caller logs a no-op instead of
-// loading a snapshot (IMPLEMENTATION.md §4).
+// loading a snapshot.
 func stepSnapshot(items []string, current string, delta int) (string, bool) {
 	idx := -1
 	for i, s := range items {
