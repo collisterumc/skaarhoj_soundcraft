@@ -133,6 +133,7 @@ func newTestDevice(t *testing.T, dial dialFunc, mutate ...func(*device)) (*devic
 			readDeadline: 50 * time.Millisecond,
 		},
 		store:       newStateStore(),
+		snapshots:   newSnapshotCache(),
 		connPID:     testConnPID,
 		toManager:   toManager,
 		fromManager: fromManager,
@@ -185,9 +186,12 @@ func withRealWireMapping(t *testing.T) func(*device) {
 		d.inputs = 12 // Ui16
 		d.line = 2
 		d.pids = mixerPIDs{
-			channelMute:  r.PID("channel_mute"),
-			channelFader: r.PID("channel_fader"),
-			masterFader:  r.PID("master_fader"),
+			channelMute:     r.PID("channel_mute"),
+			channelFader:    r.PID("channel_fader"),
+			masterFader:     r.PID("master_fader"),
+			snapshotUp:      r.PID("snapshot_up"),
+			snapshotDown:    r.PID("snapshot_down"),
+			currentSnapshot: r.PID("current_snapshot"),
 		}
 	}
 }
@@ -320,6 +324,192 @@ func TestInboundForwardsToManager(t *testing.T) {
 	if got := countSETD(conn.written(), "SETD^"); got != 0 {
 		t.Errorf("inbound produced %d outbound SETD frames, want 0", got)
 	}
+}
+
+// hasFrame reports whether an exact wire frame was written.
+func hasFrame(writes []string, msg string) bool {
+	for _, w := range writes {
+		if w == "3:::"+msg {
+			return true
+		}
+	}
+	return false
+}
+
+// awaitParameter consumes toManager until the given parameter arrives, then
+// returns it. It fails the test on timeout.
+func awaitParameter(t *testing.T, toManager <-chan *pb.Parameter, pid uint32) *pb.Parameter {
+	t.Helper()
+	deadline := time.After(2 * time.Second)
+	for {
+		select {
+		case p := <-toManager:
+			if p.Id.Parameter == pid {
+				return p
+			}
+		case <-deadline:
+			t.Fatalf("timed out waiting for parameter %d", pid)
+		}
+	}
+}
+
+// TestSnapshotConnectRequestsList verifies the connect handshake for snapshots:
+// SHOWLIST goes out on connect, and once the dump carries var.currentShow the
+// loop requests that show's SNAPSHOTLIST.
+func TestSnapshotConnectRequestsList(t *testing.T) {
+	dialer := newMockDialer()
+	_, _, toManager := newTestDevice(t, dialer.dial, withRealWireMapping(t))
+
+	conn := newMockConn()
+	dialer.queueConn(conn)
+	awaitConnection(t, toManager, true)
+
+	waitFor(t, "SHOWLIST on connect", func() bool {
+		return hasFrame(conn.written(), "SHOWLIST")
+	})
+
+	// The dump's var.currentShow triggers a SNAPSHOTLIST for that show.
+	conn.frames <- "3:::SETS^var.currentShow^ShowA"
+	waitFor(t, "SNAPSHOTLIST for current show", func() bool {
+		return hasFrame(conn.written(), "SNAPSHOTLIST^ShowA")
+	})
+}
+
+// TestSnapshotShowlistReplyRequestsList verifies the second trigger path: a
+// SHOWLIST reply requests SNAPSHOTLIST for the show already in the store.
+func TestSnapshotShowlistReplyRequestsList(t *testing.T) {
+	dialer := newMockDialer()
+	_, _, toManager := newTestDevice(t, dialer.dial, withRealWireMapping(t))
+
+	conn := newMockConn()
+	dialer.queueConn(conn)
+	awaitConnection(t, toManager, true)
+
+	// currentShow lands first, then the SHOWLIST reply arrives. The SHOWLIST
+	// reply must request the current show's snapshots.
+	conn.frames <- "3:::SETS^var.currentShow^ShowA\nSHOWLIST^ShowA^ShowB"
+	waitFor(t, "SNAPSHOTLIST from SHOWLIST reply", func() bool {
+		return hasFrame(conn.written(), "SNAPSHOTLIST^ShowA")
+	})
+}
+
+// TestSnapshotStepLoadsAdjacent drives the full path: cache a snapshot list,
+// set the current snapshot, then a snapshot_up trigger emits the exact
+// LOADSNAPSHOT for the next entry.
+func TestSnapshotStepLoadsAdjacent(t *testing.T) {
+	dialer := newMockDialer()
+	dev, fromManager, toManager := newTestDevice(t, dialer.dial, withRealWireMapping(t))
+
+	conn := newMockConn()
+	dialer.queueConn(conn)
+	awaitConnection(t, toManager, true)
+	stop := make(chan struct{})
+	defer close(stop)
+	drainToManager(toManager, stop)
+
+	conn.frames <- "3:::SETS^var.currentShow^ShowA\n" +
+		"SNAPSHOTLIST^ShowA^Snap1^Snap2^Snap3\n" +
+		"SETS^var.currentSnapshot^Snap2"
+	waitFor(t, "snapshot list cached", func() bool {
+		_, items := dev.snapshots.snapshot()
+		return len(items) == 3
+	})
+	waitFor(t, "current snapshot in store", func() bool {
+		v, _ := dev.store.get("var.currentSnapshot")
+		return v == "Snap2"
+	})
+
+	fromManager <- b.Param(dev.pids.snapshotUp, dev.id, b.Trigger())
+	waitFor(t, "LOADSNAPSHOT for next snapshot", func() bool {
+		return hasFrame(conn.written(), "LOADSNAPSHOT^ShowA^Snap3")
+	})
+
+	fromManager <- b.Param(dev.pids.snapshotDown, dev.id, b.Trigger())
+	waitFor(t, "LOADSNAPSHOT for previous snapshot", func() bool {
+		return hasFrame(conn.written(), "LOADSNAPSHOT^ShowA^Snap1")
+	})
+}
+
+// TestCurrentSnapshotFeedback confirms an inbound var.currentSnapshot SETS
+// reaches toManager as the current_snapshot string parameter.
+func TestCurrentSnapshotFeedback(t *testing.T) {
+	dialer := newMockDialer()
+	dev, _, toManager := newTestDevice(t, dialer.dial, withRealWireMapping(t))
+
+	conn := newMockConn()
+	dialer.queueConn(conn)
+	awaitConnection(t, toManager, true)
+
+	conn.frames <- "3:::SETS^var.currentSnapshot^Snap2"
+	p := awaitParameter(t, toManager, dev.pids.currentSnapshot)
+	if len(p.Value) != 1 || p.Value[0].GetStr() != "Snap2" {
+		t.Errorf("current_snapshot = %+v, want Snap2", p.Value)
+	}
+}
+
+// TestSnapshotCacheClearedOnDisconnect proves the cache does not survive a power
+// cycle: after a disconnect and a reconnect without any list replies, a
+// snapshot_up trigger is a no-op — no LOADSNAPSHOT reaches the wire.
+func TestSnapshotCacheClearedOnDisconnect(t *testing.T) {
+	dialer := newMockDialer()
+	dev, fromManager, toManager := newTestDevice(t, dialer.dial, withRealWireMapping(t))
+
+	conn1 := newMockConn()
+	dialer.queueConn(conn1)
+	awaitConnection(t, toManager, true)
+
+	conn1.frames <- "3:::SETS^var.currentShow^ShowA\n" +
+		"SNAPSHOTLIST^ShowA^Snap1^Snap2\n" +
+		"SETS^var.currentSnapshot^Snap1"
+	waitFor(t, "snapshot list cached", func() bool {
+		_, items := dev.snapshots.snapshot()
+		return len(items) == 2
+	})
+
+	conn1.Close()
+	awaitConnection(t, toManager, false)
+	waitFor(t, "cache cleared on disconnect", func() bool {
+		_, items := dev.snapshots.snapshot()
+		return len(items) == 0
+	})
+
+	// Reconnect, but send no list replies this time.
+	conn2 := newMockConn()
+	dialer.queueConn(conn2)
+	awaitConnection(t, toManager, true)
+	waitFor(t, "SHOWLIST re-requested on reconnect", func() bool {
+		return hasFrame(conn2.written(), "SHOWLIST")
+	})
+
+	// A trigger with an empty cache must not load anything.
+	fromManager <- b.Param(dev.pids.snapshotUp, dev.id, b.Trigger())
+	time.Sleep(30 * time.Millisecond) // let the pump handle it
+	for _, w := range conn2.written() {
+		if strings.HasPrefix(w, "3:::LOADSNAPSHOT") {
+			t.Errorf("empty cache produced a LOADSNAPSHOT: %q", w)
+		}
+	}
+}
+
+// TestSnapshotShowChangeRerequests confirms a var.currentShow change from the
+// mixer triggers a fresh SNAPSHOTLIST for the new show.
+func TestSnapshotShowChangeRerequests(t *testing.T) {
+	dialer := newMockDialer()
+	_, _, toManager := newTestDevice(t, dialer.dial, withRealWireMapping(t))
+
+	conn := newMockConn()
+	dialer.queueConn(conn)
+	awaitConnection(t, toManager, true)
+
+	conn.frames <- "3:::SETS^var.currentShow^ShowA"
+	waitFor(t, "SNAPSHOTLIST for first show", func() bool {
+		return hasFrame(conn.written(), "SNAPSHOTLIST^ShowA")
+	})
+
+	conn.frames <- "3:::SETS^var.currentShow^ShowB"
+	waitFor(t, "SNAPSHOTLIST for changed show", func() bool {
+		return hasFrame(conn.written(), "SNAPSHOTLIST^ShowB")
+	})
 }
 
 func countSETD(writes []string, prefix string) int {

@@ -28,13 +28,18 @@ func wireTestDevice(t *testing.T) *device {
 	t.Helper()
 	r := testRegistry(t)
 	d := &device{
-		id:     1,
-		inputs: 12, // Ui16
-		line:   2,
+		id:        1,
+		inputs:    12, // Ui16
+		line:      2,
+		store:     newStateStore(),
+		snapshots: newSnapshotCache(),
 		pids: mixerPIDs{
-			channelMute:  r.PID("channel_mute"),
-			channelFader: r.PID("channel_fader"),
-			masterFader:  r.PID("master_fader"),
+			channelMute:     r.PID("channel_mute"),
+			channelFader:    r.PID("channel_fader"),
+			masterFader:     r.PID("master_fader"),
+			snapshotUp:      r.PID("snapshot_up"),
+			snapshotDown:    r.PID("snapshot_down"),
+			currentSnapshot: r.PID("current_snapshot"),
 		},
 	}
 	if d.pids.channelMute == 0 || d.pids.channelFader == 0 || d.pids.masterFader == 0 {

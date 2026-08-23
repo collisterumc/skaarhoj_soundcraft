@@ -228,6 +228,9 @@ per-bus sends are deferred past v1 (G0 decision 2026-07-20).
 Snapshot up/down semantics: the core caches `SNAPSHOTLIST` for the current show, locates
 `var.currentSnapshot` in that list, and loads the adjacent entry (wrapping at the ends).
 If the list is empty or the current snapshot is unknown, the trigger is a logged no-op.
+Stepping reads the mixer-confirmed `var.currentSnapshot`, so presses that land inside the
+mixer's ~220 ms load-confirm window compute the same target and collapse to one step —
+the step count follows the mixer's actual position, never an assumed one.
 
 ---
 
@@ -567,6 +570,11 @@ Format: `DECISION: <date> — <topic> — <decision> — <rationale>`
   generates 1-based dimension IDs from `Count`; keying the labels 1..Count aligns them with
   those IDs (`generateDimensions` in `parameter-dimension.go`). Dimension index 1..inputs
   maps to wire `i.<index-1>`, inputs+1.. maps to `l.<index-inputs-1>`.
+- DECISION: 2026-08-23 — Snapshot display scope — The `current_snapshot` parameter shows
+  the snapshot name only; no separate `current_show` parameter in v1. — The G0 snapshot
+  decision specifies a current-snapshot-name display, a panel display has one line, and
+  the operator steps snapshots, not shows. §4 row 7 listed both keys, so this narrows it;
+  flagged for owner review — adding a `current_show` string parameter later is cheap.
 - DECISION: 2026-08-23 — Model and capability detection — Size channel dimensions from the
   `model` state key (`ui16`), never from `type` or `var.mtk.present`. — On the test Ui16,
   `type` reads `8ch` (which is not the input count) and `var.mtk.present` reads `1`

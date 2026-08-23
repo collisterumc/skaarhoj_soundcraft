@@ -54,3 +54,35 @@ func parseMessage(line string) (message, bool) {
 		return message{kind: kind, args: args}, true
 	}
 }
+
+// listReply is a parsed list-reply message (IMPLEMENTATION.md §2.2). Flat lists
+// (SHOWLIST) carry only items and an empty key. Keyed lists (SNAPSHOTLIST^show)
+// carry the key plus items. The empty form is a trailing separator
+// (SNAPSHOTLIST^show^ or SHOWLIST^) and yields no items. List fields are
+// separator-split whole; unlike SETS values they never contain '^'.
+type listReply struct {
+	key   string   // the show for a keyed list; empty for a flat list
+	items []string // list entries in wire order; empty for the empty form
+}
+
+// parseListReply reads a list-reply message into a key and items. keyed selects
+// how the first field is read: keyed lists (SNAPSHOTLIST) treat it as the show
+// key, flat lists (SHOWLIST) treat it as the first item. ok is false when the
+// message carries no fields at all.
+func parseListReply(msg message, keyed bool) (listReply, bool) {
+	if len(msg.args) == 0 {
+		return listReply{}, false
+	}
+	fields := msg.args
+	var key string
+	if keyed {
+		key = fields[0]
+		fields = fields[1:]
+	}
+	// The empty form is a lone trailing separator: strings.Split leaves one
+	// empty field, which is not a real entry.
+	if len(fields) == 1 && fields[0] == "" {
+		fields = nil
+	}
+	return listReply{key: key, items: fields}, true
+}

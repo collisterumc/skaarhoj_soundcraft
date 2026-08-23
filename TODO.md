@@ -203,23 +203,30 @@ feedback was proven with a second WebSocket client instead.
 
 ## 5. Feature: snapshot restore (with feedback)
 
-- [ ] On connect: request `SHOWLIST`, then `SNAPSHOTLIST^<show>` for the current show;
+- [x] On connect: request `SHOWLIST`, then `SNAPSHOTLIST^<show>` for the current show;
       cache results; refresh on `var.currentShow` change
-- [ ] Parameters: `snapshot_up` / `snapshot_down` (NoValue, Oneshot triggers) — step to
+- [x] Parameters: `snapshot_up` / `snapshot_down` (NoValue, Oneshot triggers) — step to
       the adjacent snapshot within the current show's cached list (wrap at list ends) and
       send `LOADSNAPSHOT^<show>^<snap>` (per G0 decision; no dynamic option list in v1)
-- [ ] Feedback: `var.currentShow` / `var.currentSnapshot` → read-only string parameters
-      for display use (current snapshot name on the button/display)
-- [ ] Handle empty-list edge case (`CUELIST^Default^` trailing-separator format) and
+- [x] Feedback: `var.currentShow` / `var.currentSnapshot` → read-only string parameters
+      for display use (current snapshot name on the button/display) — implemented as one
+      `current_snapshot` parameter showing the snapshot name; no `current_show` parameter
+      (Decision log 2026-08-23, flagged for owner review)
+- [x] Handle empty-list edge case (`CUELIST^Default^` trailing-separator format) and
       unknown current snapshot (not in cached list) — up/down becomes no-op with log
 
 **Gate G5 (agent-assertable):**
-- [ ] Unit tests: list-reply parser handles flat (`SHOWLIST^a^b`), keyed
+- [x] Unit tests: list-reply parser handles flat (`SHOWLIST^a^b`), keyed
       (`SNAPSHOTLIST^show^s1^s2`), and empty (`CUELIST^Default^`) forms; up/down stepping
       logic (adjacency, wrap-around, empty/unknown-current no-op)
-- [ ] Integration: snapshot up/down from the core loads the adjacent snapshot and
+- [x] Integration: snapshot up/down from the core loads the adjacent snapshot and
       `var.currentSnapshot` feedback matches the loaded name; loading a snapshot from
-      the mixer web UI updates the core's current-snapshot display parameter
+      the mixer web UI updates the core's current-snapshot display parameter — verified
+      2026-08-23 against the Ui16 over gRPC: up/down stepped with wrap-around both
+      directions (feedback in 214–292 ms); an external load updated the display in ~20 ms.
+      The "web UI" leg was proxied through a second WebSocket client (milestone-2
+      precedent). Original snapshot restored; state fingerprint matched except three
+      mixer-internal uptime counters
 
 ---
 

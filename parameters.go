@@ -129,6 +129,41 @@ func configureParameters(r *ib.IBeamParameterRegistry) {
 		})
 	}
 
+	// current_snapshot is a read-only display of the mixer's active snapshot name,
+	// fed from SETS^var.currentSnapshot. Registered before the up/down triggers so
+	// their RecommendedParamForTextDisplay can reference it at validation time.
+	r.RegisterParameter(&pb.ParameterDetail{
+		Path:          "snapshot",
+		Name:          "current_snapshot",
+		Label:         "Current Snapshot",
+		ShortLabel:    "Snapshot",
+		Description:   "Name of the mixer's active snapshot in the current show",
+		ControlStyle:  pb.ControlStyle_NoControl,
+		FeedbackStyle: pb.FeedbackStyle_NormalFeedback,
+		ValueType:     pb.ValueType_String,
+		DefaultValue:  b.String(""),
+	}, ib.WithDefaultValid())
+
+	// snapshot_up / snapshot_down step to the adjacent snapshot in the current
+	// show's cached list (wrapping at the ends). Oneshot triggers carry no value;
+	// corelib delivers exactly one Trigger per press to the device loop.
+	for _, name := range []struct{ pname, label, short, desc string }{
+		{"snapshot_up", "Next Snapshot", "Snap +", "Load the next snapshot in the current show"},
+		{"snapshot_down", "Previous Snapshot", "Snap -", "Load the previous snapshot in the current show"},
+	} {
+		r.RegisterParameter(&pb.ParameterDetail{
+			Path:                           "snapshot",
+			Name:                           name.pname,
+			Label:                          name.label,
+			ShortLabel:                     name.short,
+			Description:                    name.desc,
+			ControlStyle:                   pb.ControlStyle_Oneshot,
+			FeedbackStyle:                  pb.FeedbackStyle_NoFeedback,
+			ValueType:                      pb.ValueType_NoValue,
+			RecommendedParamForTextDisplay: "current_snapshot",
+		})
+	}
+
 	// master_fader has no dimension; it maps to the single m.mix path.
 	r.RegisterParameter(&pb.ParameterDetail{
 		Path:                  "mix",

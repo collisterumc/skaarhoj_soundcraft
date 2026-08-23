@@ -16,8 +16,15 @@ import (
 // validates values, so the core clamps floats to [0,1] and sends booleans as
 // exactly 0 or 1 (Decision 2026-08-23).
 
-// buildWireMessages translates one fromManager parameter into SETD lines.
+// buildWireMessages translates one fromManager parameter into wire lines.
 func (d *device) buildWireMessages(param *pb.Parameter) []string {
+	switch param.Id.Parameter {
+	case d.pids.snapshotUp:
+		return d.snapshotStepMessages(1)
+	case d.pids.snapshotDown:
+		return d.snapshotStepMessages(-1)
+	}
+
 	var msgs []string
 	for _, v := range param.Value {
 		path, ok := d.wirePath(param.Id.Parameter, v.DimensionID)
@@ -37,6 +44,25 @@ func (d *device) buildWireMessages(param *pb.Parameter) []string {
 		log.Debugf("Device %d: no wire mapping for parameter %d", d.id, param.Id.Parameter)
 	}
 	return msgs
+}
+
+// snapshotStepMessages resolves a snapshot up/down trigger to a single
+// LOADSNAPSHOT line. delta is +1 for next, -1 for previous. An empty cache or a
+// current snapshot outside the cached list is a logged no-op, so a trigger with
+// nothing to load sends nothing (IMPLEMENTATION.md §4).
+func (d *device) snapshotStepMessages(delta int) []string {
+	show, items := d.snapshots.snapshot()
+	if len(items) == 0 {
+		log.Debugf("Device %d: snapshot step ignored, no cached snapshot list for show %q", d.id, show)
+		return nil
+	}
+	current, _ := d.store.get("var.currentSnapshot")
+	target, ok := stepSnapshot(items, current, delta)
+	if !ok {
+		log.Debugf("Device %d: snapshot step ignored, current snapshot %q not in cached list", d.id, current)
+		return nil
+	}
+	return []string{"LOADSNAPSHOT^" + show + "^" + target}
 }
 
 // wirePath resolves the channel path stem (e.g. "i.2", "l.0", "m") for a
@@ -99,6 +125,12 @@ func (d *device) inboundParameter(path, value string) *pb.Parameter {
 			return nil
 		}
 		return b.Param(d.pids.masterFader, d.id, b.Float(clampUnit(f)))
+	}
+	// The display shows the snapshot name alone: a small panel has one line, and
+	// the operator steps snapshots, not shows. var.currentSnapshot covers both
+	// the initial dump and mixer-side loads (both arrive as this SETS).
+	if path == "var.currentSnapshot" {
+		return b.Param(d.pids.currentSnapshot, d.id, b.String(value))
 	}
 
 	typ, rest, ok := strings.Cut(path, ".")

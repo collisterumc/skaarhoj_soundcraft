@@ -86,13 +86,17 @@ func buildDevices(r *ib.IBeamParameterRegistry, config CoreConfig, toManager cha
 			dial:        wsDial,
 			timing:      defaultTiming,
 			store:       newStateStore(),
+			snapshots:   newSnapshotCache(),
 			connPID:     r.PID("connection"),
 			toManager:   toManager,
 			fromManager: make(chan *pb.Parameter, 10),
 			pids: mixerPIDs{
-				channelMute:  r.PID("channel_mute"),
-				channelFader: r.PID("channel_fader"),
-				masterFader:  r.PID("master_fader"),
+				channelMute:     r.PID("channel_mute"),
+				channelFader:    r.PID("channel_fader"),
+				masterFader:     r.PID("master_fader"),
+				snapshotUp:      r.PID("snapshot_up"),
+				snapshotDown:    r.PID("snapshot_down"),
+				currentSnapshot: r.PID("current_snapshot"),
 			},
 			inputs: ch.inputs,
 			line:   ch.line,
@@ -106,9 +110,12 @@ func buildDevices(r *ib.IBeamParameterRegistry, config CoreConfig, toManager cha
 // mixerPIDs holds the corelib parameter IDs the device loop maps to and from
 // the wire. Resolved once at registration so the hot path never looks them up.
 type mixerPIDs struct {
-	channelMute  uint32
-	channelFader uint32
-	masterFader  uint32
+	channelMute     uint32
+	channelFader    uint32
+	masterFader     uint32
+	snapshotUp      uint32
+	snapshotDown    uint32
+	currentSnapshot uint32
 }
 
 type device struct {
@@ -117,6 +124,7 @@ type device struct {
 	dial         dialFunc
 	timing       loopTiming
 	store        *stateStore
+	snapshots    *snapshotCache
 	connPID      uint32
 	pids         mixerPIDs
 	inputs       int // input channels; the channel dimension splits i.<n> from l.<n> here
@@ -136,6 +144,26 @@ func (d *device) queue(param *pb.Parameter) {
 	case d.fromManager <- param:
 	default:
 		log.Errorf("Device %d: queue overrun, dropping parameter %d", d.id, param.Id.Parameter)
+	}
+}
+
+// send puts a raw wire message on the session outbound queue. Both the reader
+// goroutine (list-reply follow-ups) and the pump goroutine (writes) call it, so
+// it takes the outbound channel under the same lock the session installs and
+// clears. Returns false when disconnected or the queue is full.
+func (d *device) send(msg string) bool {
+	d.mu.Lock()
+	out := d.out
+	d.mu.Unlock()
+	if out == nil {
+		return false
+	}
+	select {
+	case out <- msg:
+		return true
+	default:
+		log.Errorf("Device %d: outbound queue full, dropping %q", d.id, msg)
+		return false
 	}
 }
 
@@ -184,6 +212,11 @@ func (d *device) session(ctx context.Context, conn wsConn) {
 
 	log.Infof("Device %d: connected to mixer at %s (connection=1)", d.id, d.ip)
 	d.reportConnection(true)
+
+	// Request the show list so the snapshot cache can be rebuilt from the current
+	// show's SNAPSHOTLIST. The mixer never replies to an unknown command, so a
+	// silent SHOWLIST simply leaves the cache empty (IMPLEMENTATION.md §5).
+	d.send("SHOWLIST")
 
 	// Single writer goroutine: websocket conns are not concurrent-write-safe.
 	var wg sync.WaitGroup
@@ -238,14 +271,16 @@ func (d *device) session(ctx context.Context, conn wsConn) {
 	conn.Close()
 	wg.Wait()
 
-	d.store.clear() // no stale state may survive a power cycle
+	d.store.clear()     // no stale state may survive a power cycle
+	d.snapshots.clear() // the cache must not survive a power cycle either
 	d.reportConnection(false)
 	log.Warnf("Device %d: mixer %s disconnected (connection=0)", d.id, d.ip)
 }
 
 // ingest reduces one inbound line into the state store. Returns true if the
-// line carried state. List replies and BMSG are parsed but unused until the
-// snapshot milestone.
+// line carried state. It also drives the snapshot cache: a SHOWLIST reply or a
+// var.currentShow change requests the current show's SNAPSHOTLIST, and a
+// SNAPSHOTLIST reply fills the cache.
 func (d *device) ingest(line string) bool {
 	msg, ok := parseMessage(line)
 	if !ok {
@@ -253,6 +288,9 @@ func (d *device) ingest(line string) bool {
 	}
 	switch msg.kind {
 	case "SETD", "SETS":
+		if msg.kind == "SETS" && msg.path == "var.currentShow" {
+			d.requestSnapshotList(msg.value)
+		}
 		d.store.set(msg.path, msg.value)
 		// Map recognized paths to current values. Inbound traffic never triggers
 		// a wire send — only fromManager writes go out (§2.7).
@@ -260,8 +298,28 @@ func (d *device) ingest(line string) bool {
 			d.toManager <- p
 		}
 		return true
+	case "SHOWLIST":
+		// SHOWLIST does not name the current show; read it from the store (the
+		// dump carries var.currentShow) and request its snapshots.
+		if show, ok := d.store.get("var.currentShow"); ok {
+			d.requestSnapshotList(show)
+		}
+	case "SNAPSHOTLIST":
+		if reply, ok := parseListReply(msg, true); ok {
+			d.snapshots.setList(reply.key, reply.items)
+		}
 	}
 	return false
+}
+
+// requestSnapshotList points the cache at show and asks the mixer for its
+// snapshots. A silent reply (unknown command) leaves the cache empty. Two
+// events request a list: the SHOWLIST reply and a var.currentShow change. Both
+// can fire near connect for the same show; the cache makes a repeat request
+// harmless.
+func (d *device) requestSnapshotList(show string) {
+	d.snapshots.setShow(show)
+	d.send("SNAPSHOTLIST^" + show)
 }
 
 // pumpFromManager drains manager traffic for the life of the device. While
