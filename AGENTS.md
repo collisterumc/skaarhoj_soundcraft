@@ -54,15 +54,91 @@ SKAARHOJ details beyond what's needed to build and deploy the core.
 
 ## Git
 
-**NEVER run `git commit`, `git push`, or any other git write operation unless the user
-has explicitly asked you to.** Stage files, show diffs, and describe what you would
-commit — but do NOT commit or push without a direct, unambiguous instruction from the
-user.
+## Git
 
-Commit messages: a short summary line stating the purpose, then a blank line, then a few
-brief bullet points — one per logical change. Keep bullets short (≤ 15 words); don't
-repeat details the diff already shows (file lists, counts, specifics).
+**NEVER run `git commit`, `git push`, or any other git write operation unless the user has explicitly asked you to.** Stage files, show diffs, and describe what you would commit — but do NOT commit or push without a direct, unambiguous instruction from the user.
 
-When writing a commit message, always review the actual files being committed rather than
-relying solely on chat context. The message should reflect the changes represented in the
-files themselves rather than any prior description or intent.
+**"Commit" means commit to the branch that is currently checked out.** Never create a branch first, and never switch branches, including on `master`. This repository's work lands on `master` directly; branching without being asked leaves the user with a merge they did not want. If a branch is wanted, the user will say so.
+
+Commit messages: a summary line stating the purpose, a blank line, then a few bullets — one per logical change. A one-line message is fine when the summary says it all.
+
+- Bullets are ≤ 15 words. Count.
+- Every bullet anchors to a staged change: it states that change's purpose, or the reason it was needed.
+- Never restate the diff's contents (file lists, counts, specifics) — and never claim what the diff doesn't do (consequences elsewhere, plans, findings — those go in docs).
+- Plain reader language, not internal jargon.
+- Write from the staged files, not chat context or prior intent.
+
+Hard rule — test every bullet before committing; delete or rewrite any failure:
+
+1. Count its words. More than 15 → rewrite.
+2. Name the staged change it describes. Can't → delete.
+3. Is it that change's purpose or reason, or just the diff restated? Restated → delete.
+4. Does it need project jargon to say? Yes → say it plainly.
+
+Good — each bullet anchors to a staged change (the new default; the TODO entry):
+
+```
+Temporarily point the agent broker at the raw API Gateway hostname
+
+- a content filter blocks the new custom domain at one site
+- a TODO reverts this once the domain is unblocked
+```
+
+Bad — every bullet fails a test:
+
+```
+Update settings.py and TODO.md (2 files)
+
+- changed broker_url default on line 49 of settings.py
+- leverages per-caller ceilings for downstream mint hygiene
+- old URLs keep working until the fleet cuts over
+```
+
+## Write plainly
+
+This covers everything you write: chat replies, commit messages, comments,
+docstrings, Markdown, pull request bodies, agent briefs.
+
+**Structure**
+
+- Lead with the answer or the action.
+- Put the subject and verb near the start of the sentence.
+- State the point, then explain it.
+- One idea per sentence. Keep most sentences under 20 words.
+- Use ordinary verbs, not abstract nouns.
+
+**Length**
+
+- Chat replies: a few sentences, or five bullets at most.
+- Progress updates: two sentences.
+- Documents run as long as their content needs. Write plain sentences, not
+  fewer facts — never drop a constraint, measurement, date, or reason to hit
+  a length.
+
+**Don't**
+
+- Restate the request back.
+- Narrate your reasoning or critique yourself unless asked.
+- Put two em-dash asides in one sentence.
+- Rename a thing mid-paragraph. If it is the stream, call it the stream.
+- End on a flourish that adds no fact.
+
+**Examples**
+
+Bad: "The only notification anyone receives fires at post time."
+Good: "Notifications only fire at post time."
+
+Bad: "Hence the two things this does not read: the status, and the current
+revision."
+Good: "It ignores the status and current revision."
+
+Bad: "The removal of the fold was a simplification."
+Good: "Removing the fold simplified it."
+
+## Code comments
+
+- Comment only non-obvious constraints, invariants, or reasons.
+- Do not describe what readable code already says.
+- Use one short sentence where you can.
+- Never put status reports, change summaries, or conversation in a comment.
+- Before finishing, delete comments that clear naming made unnecessary.
