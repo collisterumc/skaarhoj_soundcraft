@@ -41,9 +41,10 @@ not split for a line count; split where there is a real seam.
 ## Judgment
 
 Complexity that the problem genuinely requires is not a finding. This core has real
-irreducible complexity: reconnect state machines, protocol parsing, target/current
-reconciliation against a mixer that never confirms writes. Do not flag those for being
-intricate. Flag them if they are more intricate than they need to be, and say what the
+irreducible complexity — reconnect state machines, protocol parsing, reconciling target
+against current. IMPLEMENTATION.md §9 and the decision log explain which awkward-looking
+code exists for a measured reason; read them before calling something over-built. Flag
+intricate code only when it is more intricate than the problem demands, and say what the
 simpler shape is.
 
 Distinguish the two clearly:

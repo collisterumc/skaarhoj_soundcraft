@@ -59,12 +59,16 @@ scoped deliberately, so don't ask one to do another's job.
 
 | Agent | Use it for |
 |-------|------------|
-| `core-builder` | Writing and changing Go code against one TODO.md item |
+| `core-builder` | Building anything: code, tests, packaging, scripts, config, tooling |
 | `adversarial-validator` | Attacking a finished change or claim before a Gate box gets checked |
 | `clarity-reviewer` | Complexity and readability only — it does not hunt for bugs |
 
-Give each one a bounded task, not a whole milestone. `adversarial-validator` is meant to
-run even when the work looks correct; that is the point of it.
+Give each one a bounded task. `adversarial-validator` is meant to run even when the work
+looks correct; that is the point of it.
+
+Keep project facts in the documents, not in the agent definitions. The agents are told
+which sections to read and are expected to re-read them each run, so a fact recorded once
+in IMPLEMENTATION.md reaches all three and cannot drift out of sync.
 
 ## Git
 
