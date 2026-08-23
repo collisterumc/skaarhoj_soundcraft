@@ -296,6 +296,39 @@ settles it by experiment. Requires the owner and the Blue Pill on the same subne
 
 ---
 
+## 6.6 TestTube-driven hardware integration
+
+TestTube is SKAARHOJ's official tool for developing and testing device cores
+(github.com/SKAARHOJ/ibeam-testtube-releases; pinned v1.0.14-pre2, sha256
+`e9fea85efdc96bc9a7cc465bad6cbfc06c9cf1dfa028e4d6290d59e71702494d`, kept in the
+git-ignored `reference/testtube/` — never commit the binary). It dials the core's gRPC
+endpoint (default `127.0.0.1:8502`), so this block runs from the dev container alone —
+no Blue Pill required. The core connects to the real Ui16; every touched mixer value is
+captured first and restore-verified afterwards (milestone-2 discipline).
+
+- [ ] Enumerate the registered parameters through TestTube against the running core and
+      confirm the listing matches the v1 catalog for the configured model
+- [ ] Drive each controllable parameter with `testtube test <pattern> <parameter>`:
+      `channel_mute` (≥ 2 channels including a line-in), `channel_fader` (bounds 0/100
+      and mid values), `master_fader`, `record_2track` (start then stop) — verify each
+      action on the mixer via an observer WebSocket client, and verify feedback (current
+      value plus the dB companion text) through the core
+- [ ] `snapshot_up` / `snapshot_down`: exercise through TestTube if it supports Oneshot
+      triggers; otherwise record the limitation and cover via direct gRPC, labeled as
+      such in the results
+- [ ] End state: original values restored and verified (state fingerprint),
+      `var.isRecording` = 0 from a fresh connection
+- [ ] Record results in IMPLEMENTATION.md § "TestTube integration results": one row per
+      v1 parameter, PASS/FAIL/LIMITATION, each with a captured evidence excerpt
+
+**Gate G6.6 (agent-assertable):**
+- [ ] The results table has a row for every v1 parameter; no FAIL row lacks a linked
+      Decision-log mitigation entry
+- [ ] Restore proof recorded; `git status --porcelain` shows only documentation changes
+      (no binaries or test artifacts committed)
+
+---
+
 ## 7. Hardening, packaging & deployment
 
 - [ ] Reconnect soak test: repeated mixer power-cycles (the SKAARHOJ switches mixer power
@@ -337,5 +370,9 @@ graph LR
     G4 --> G65[6.5 Remote-core attach]
     G5 --> G65
     G6 --> G65
+    G4 --> G66[6.6 TestTube integration]
+    G5 --> G66
+    G6 --> G66
     G65 --> G7[7 Hardening/deploy]
+    G66 --> G7
 ```
