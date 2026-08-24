@@ -612,24 +612,161 @@ and imported instead of clicked together in the Configuration UI:
 
 ## 9.4 Blue Pill operations playbook (milestone 8)
 
-To be filled by milestone 8, before the end-to-end run. Keep it to facts a future
-maintainer needs and can act on; site addresses and credentials stay in the git-ignored
-`reference/site.md`, and the scripted recipes stay in `reference/tools/README.md`.
+Established 2026-08-24 against the owner's Quick Bar (Reactor v2.2.7-pre5) with the core
+running in the dev container. The core was pointed at a **local fake Ui16**, not the real
+mixer, so nothing here touched mixer state. Site addresses, credentials and the scripted
+recipes live in the git-ignored `reference/tools/README.md`.
 
-This section must end up carrying:
+### Reactor's API is plain HTTP
 
-- The behavior `ParentID` and `IOReference.Raw` string for **every** v1 parameter. Known
-  so far (§9.3): `SKAARHOJ:Toggle` for a binary, `SKAARHOJ:StepChange` for a float,
-  `SKAARHOJ:DisplayValue` for a text display. Unknown: Oneshot triggers, and how a
-  title-display reference reaches the panel.
-- Whether a dimensioned display companion (`channel_fader_db`, `channel_name`) pairs
-  per-element with the parameter it accompanies. Corelib resolves those references by
-  name only and does not check that both sides share a dimension, so Reactor's behavior
-  here is unverified (Decision log 2026-08-24, channel-name title display).
-- The `.rpj` conf-tree layout, and which files must agree for a key to appear on a panel.
-- What the panel simulator renders versus the physical Quick Bar, so a blank display can
-  be attributed correctly. Milestone 6.5 hit exactly this ambiguity and could not resolve
-  it.
+Reactor and system-manager are driven entirely by HTTP; no browser is needed. Log in
+once for a session cookie, then every Reactor operation is `POST /rapi/<Command>` with
+the command data as the JSON body. The EULA gate is client-side only (a localStorage
+checksum), so it never blocks an API client. Milestone 6.5 spent about an hour driving
+these operations through the Configuration UI; they are single calls.
+
+### Panel binding reference
+
+`IOReference.Raw` is `DC:<coreName>/<deviceID>/<parameterName>/<dimensionIndex>`. A
+trailing slash is accepted, and an omitted index resolves to 1.
+
+Behaviors are identified by `ParentID` and come from Reactor's master-behavior library,
+which is independent of any device core. The full list is retrievable
+(`getRenderedMasterBahaviorsForPath`); these are the ones the v1 catalog needs:
+
+| v1 parameter | Control style | `ParentID` | `Raw` |
+|---|---|---|---|
+| `channel_mute` | Binary, Normal | `SKAARHOJ:Toggle` | `DC:skaarhoj_soundcraft/1/channel_mute/<ch>` |
+| `channel_fader` | Floating, Normal | `SKAARHOJ:StepChange` | `DC:skaarhoj_soundcraft/1/channel_fader/<ch>` |
+| `master_fader` | Floating, Normal | `SKAARHOJ:StepChange` | `DC:skaarhoj_soundcraft/1/master_fader/` |
+| `record_2track` | Binary, Normal | `SKAARHOJ:Toggle` | `DC:skaarhoj_soundcraft/1/record_2track/` |
+| `snapshot_up` | NoValue, Oneshot | `SKAARHOJ:Trigger` | `DC:skaarhoj_soundcraft/1/snapshot_up/` |
+| `snapshot_down` | NoValue, Oneshot | `SKAARHOJ:Trigger` | `DC:skaarhoj_soundcraft/1/snapshot_down/` |
+| `connection` | ConnectionState | `SKAARHOJ:Connection` | `DC:skaarhoj_soundcraft/1/connection/` |
+| `channel_name` | String, read-only | — display reference — | `{DC:skaarhoj_soundcraft/1/channel_name/<ch>}` |
+| `channel_fader_db` | String, read-only | — display reference — | `{DC:skaarhoj_soundcraft/1/channel_fader_db/<ch>}` |
+| `master_fader_db` | String, read-only | — display reference — | `{DC:skaarhoj_soundcraft/1/master_fader_db/}` |
+| `current_snapshot` | String, read-only | — display reference — | `{DC:skaarhoj_soundcraft/1/current_snapshot/}` |
+| `record_busy` | Binary, read-only | — display reference — | `{DC:skaarhoj_soundcraft/1/record_busy/}` |
+
+`SKAARHOJ:Trigger` ("Generic Trigger Action ... for use with OneShot parameters") closes
+the milestone-6.5 unknown for the two snapshot triggers.
+
+### Read-only parameters do not need their own key
+
+**No master behavior's default feedback uses `RecommendedParamForTextDisplay` or
+`RecommendedParamForTitleDisplay`.** Measured: the live library of 89 behaviors contains
+no occurrence of "Recommended" at all. Every default sets `DisplayText.Title` to
+`{Behavior:IOReference:Name}` (the parameter's own label) and `Textline1` to
+`{Behavior:IOReference:Current:Name}` (its own value). A companion parameter therefore
+never appears by itself, and has to be placed by hand.
+
+The mechanism for placing one is a braced reference in a display field, overriding the
+binding's `FeedbackDefault`:
+
+```json
+"X2": {
+  "ParentID": "SKAARHOJ:StepChange",
+  "IOReference": {"Raw": "DC:skaarhoj_soundcraft/1/channel_fader/1"},
+  "FeedbackDefault": {"AutoUnicode": "On", "DisplayText": {
+    "Title":     "{DC:skaarhoj_soundcraft/1/channel_name/1}",
+    "Textline1": "{DC:skaarhoj_soundcraft/1/channel_fader_db/1}"}}
+}
+```
+
+**This is not yet proven to render, and milestone 9 must confirm it before anything else.**
+The pattern is taken from SKAARHOJ's own shipped PDU project, but that project uses it
+in exactly one narrower form: `Title` only, never `Textline1`/`Textline2`, and with
+`Var:` substitutions rather than a literal index. The v1 bindings extrapolate on three
+axes at once — other display lines, literal dimension indices, and a Binary
+(`record_busy`) rendered as text. No braced reference has ever been observed rendering on
+this panel: §9.3's dB row is NOT SHOWN, its title row UNTESTED, and milestone 8 did not
+get a look at the hardware. If the extrapolation is wrong, the fallback is one key per
+companion using `SKAARHOJ:DisplayValue`, which costs keys the Quick Bar does not have and
+would force the v1 panel layout onto pages.
+
+Because the index is written into the reference, a dimensioned companion pairs
+per-element by construction, so the open question in the 2026-08-24 channel-name entry
+does not arise — nothing has to infer the pairing. The Recommended* fields in
+`parameters.go` still describe intent for any client that honours them; this panel does
+not.
+
+### `.rpj` layout
+
+A `.rpj` is a gzipped tar of a `./conf` tree. **Directory entries must be present** — the
+importer does not create missing parents. Five files must agree on the project's file
+name:
+
+```
+conf/projects/<proj>.json                        names the three collections
+conf/devices/<proj>/latest.json                  which core, at which address
+conf/panels/<proj>/latest.json                   which panel model is on canvas 1
+conf/layers/<proj>/latest.json                   root layer; imports the private layer
+conf/layers/<proj>/private/<layer>/latest.json   HWCBehaviors — the bindings
+```
+
+A key reaches the panel only if it appears in three places in the private layer:
+`HWCKeyMap` (panel HWC id to alias), `SectionConfig.HWCKeys`, and `HWCBehaviors`.
+
+`meta.json`'s `ProjectName` is used by the importer as the **file** name, but Reactor's
+own exporter writes the project's **display** name there, and import copies it back over
+the display name. The two differ for any renamed project, which makes a stock Reactor
+export non-restorable as-is; the restore tooling rewrites the field and repairs the names
+afterwards.
+
+### Bad bindings fail silently
+
+An unknown `ParentID`, a reference to a parameter the core does not have, and a reference
+to a core that does not exist **all import and activate without an error and without a log
+line**. The only symptom is a dead key. Any binding change therefore has to be asserted
+against a live catalog rather than eyeballed; `listDeviceModelParameters` returns what the
+attached core actually serves, and the master-behavior list validates `ParentID`s.
+
+### Authoring helpers are unavailable for a remote-attached core
+
+`recommendBehavior`, `parameterInfo` and `createBehaviorFromSimpleParameter` all fail with
+`core-skaarhoj_soundcraft not found`: they resolve against an installed core package's
+profile, which a remote-attached core has none of. The runtime path is unaffected —
+Reactor pulls the full parameter catalog, dimensions, labels and all, over gRPC. Expect
+the Configuration UI to be similarly unhelpful until milestone 10 installs a package.
+
+### Quick Bar hardware
+
+Twelve components, from the panel topology Reactor reports:
+
+- `_p1.1`–`_p1.6` (aliases X1–X6): "Elastomer Four-Way Button w/Display", RGB output,
+  four-way binary input, 64×32 px display.
+- `_p1.7`–`_p1.12` (MTR1–MTR6): "LED-Bar, 3 steps", output only, no input.
+
+**There is no fader and no encoder on this panel.** Both Floating parameters are driven by
+button edges, which is why `SKAARHOJ:StepChange` rather than `SKAARHOJ:Fader` binds them.
+`SKAARHOJ:StepChange4WVert` is the variant scoped to four-way buttons and is worth trying
+if stepping feels wrong; plain `StepChange` is the one milestone 6.5 proved on the wire.
+
+### Where to read failures
+
+`GET /api/logpackage/stream/reactor` is a Server-Sent Events stream that replays the log
+from boot and then follows. It shows project loads, core connects
+(`Connected to core at: <addr> core=skaarhoj_soundcraft`) and panel attach, which is
+enough to confirm an attach. It shows nothing about bindings. A failed remote attach
+surfaces only as a transient toast in the UI.
+
+Correlate timestamps using the device's own HTTP `Date` response header rather than a
+local clock: the dev container's wall clock steps (§9.6) and the Quick Bar's own clock
+does not track UTC.
+
+### Simulator versus physical panel
+
+Not settled by observation — the owner deferred the panel check, so milestone 9 resolves
+it with the physical bar in front of them. The decision for milestone 9 is that **the
+physical Quick Bar is the authority for every display row**. Milestone 6.5 saw a
+`DisplayValue` binding stay blank in the simulator while the same session drove real mixer
+changes, so the simulator is treated as evidence for button and LED state only, and a
+blank simulator display is not accepted as a failure.
+
+Note that the 6.5 blank is now explained regardless: that binding pointed a
+`SKAARHOJ:DisplayValue` behavior at `channel_fader_db` and expected the companion wiring
+to fill the display, which nothing does.
 
 ## 9.5 Reactor end-to-end results (milestone 9)
 
@@ -981,3 +1118,32 @@ Format: `DECISION: <date> — <topic> — <decision> — <rationale>`
   driving the panel for an hour leaves the owner unable to see progress or intervene, and
   the 6.5 run ended when that agent died mid-session and its state had to be salvaged by
   hand. Milestones 7 and 8 are mechanically assertable and stay delegable.
+- DECISION: 2026-08-24 — Read-only companions are bound as display references — Panel
+  bindings place `channel_name`, `channel_fader_db`, `master_fader_db`,
+  `current_snapshot` and `record_busy` by writing a braced reference into the
+  controlling key's `FeedbackDefault.DisplayText`, rather than giving each its own key.
+  — Giving each its own key is not affordable: the Quick Bar has six keys and v1 has six
+  controls, so companions would have to displace a control or move the layout onto pages.
+  The alternative of letting Reactor pair them is not available — the live master-behavior
+  library contains no reference to `RecommendedParamForTextDisplay` or
+  `RecommendedParamForTitleDisplay`, so a companion never appears on its own. Writing the
+  reference explicitly also settles the per-element pairing the 2026-08-24 channel-name
+  entry flagged, since the index is part of the reference. **The braced form is unproven
+  on hardware**: it is extrapolated from SKAARHOJ's shipped PDU project, which uses it
+  only for `Title` and only with `Var:` substitutions. Milestone 9 verifies it first; if
+  it fails, v1 falls back to `SKAARHOJ:DisplayValue` keys on a second page.
+- DECISION: 2026-08-24 — The physical Quick Bar is the authority for display rows —
+  Milestone 9 judges every display result on the physical bar; the simulator is evidence
+  for button and LED state only, and a blank simulator display is not recorded as a
+  failure. — Milestone 6.5 saw a display binding stay blank in the simulator during a
+  session that was simultaneously driving real mixer changes, so the simulator
+  demonstrably renders less than the hardware. The owner deferred the panel check during
+  milestone 8, so the observation itself belongs to milestone 9.
+- DECISION: 2026-08-24 — Binding changes are asserted against a live catalog — Every
+  change to the panel configuration is checked by `v1project.py assert`, which reads the
+  project back off the device and validates it against the attached core's parameter
+  catalog and Reactor's master-behavior list. — Reactor accepts an unknown behavior ID, a
+  reference to a parameter the core does not have, and a reference to a core that does not
+  exist, all without an error and without a log line; the only symptom is a key that does
+  nothing. Nothing in the product catches these, so review by eye cannot be trusted and
+  the check has to be mechanical.

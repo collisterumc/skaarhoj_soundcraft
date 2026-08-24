@@ -426,39 +426,72 @@ of known moves rather than a search. Nothing here touches the mixer.
 Back up first: export every project on the QuickBar into `reference/backups/<date>/`
 before making any change (rule in `reference/site.md`).
 
-- [ ] Map the surface we actually drive: login/EULA, project list, export, import,
+- [x] Map the surface we actually drive: login/EULA, project list, export, import,
       activate, add/remove remote device, logs, packages page. One line per call — method,
       path, what it returns, whether it needs the session cookie
-- [ ] Author the full v1 binding project as JSON and import it, rather than clicking it
+      — no browser needed: `POST /uapi/login` for a cookie, then `POST /rapi/<Command>`
+      for everything. The EULA is client-side only. Table in `reference/tools/README.md`
+- [x] Author the full v1 binding project as JSON and import it, rather than clicking it
       together: a `.rpj` is a gzipped tar of a `conf/` tree and carries `HWCBehaviors`.
       Cover **every** v1 parameter — mute button, channel fader, master fader, record
       toggle, snapshot up/down triggers, snapshot-name display, dB display, channel-name
-      title
-- [ ] Find the behavior (`ParentID`) that each parameter type needs. Milestone 6.5 knows
+      title — `v1project.py deploy`; all 12 parameters bound across 7 panel keys. The
+      read-only ones ride on the displays of the controls they belong to
+- [x] Find the behavior (`ParentID`) that each parameter type needs. Milestone 6.5 knows
       `SKAARHOJ:Toggle`, `SKAARHOJ:StepChange`, `SKAARHOJ:DisplayValue`; triggers and
       title displays are unknown. Get the list from Reactor rather than guessing
-- [ ] One command to reset the QuickBar to its pre-test baseline (import the backup,
+      — full library read from Reactor; `SKAARHOJ:Trigger` answers the Oneshot case.
+      Title displays needed a different answer entirely: Reactor ignores the
+      Recommended* fields, so companions are placed as braced references (§9.4)
+- [x] One command to reset the QuickBar to its pre-test baseline (import the backup,
       re-activate the original project). Prove it works before milestone 9 needs it
-- [ ] Write down what the panel simulator renders and what it does not — milestone 6.5
+      — `qb.py restore <dir>`, run four times on the device, ending at a clean baseline.
+      Two defects found afterwards by `adversarial-validator` and fixed: it treated a
+      project absent from the backup as a note rather than a failure (it now deletes
+      extras, which milestone 9 needs, since leaving `m8v1` behind would point a live
+      device core at the dev container), and the name repair aborted if the project it
+      parked on also needed repair. The repair ordering is covered by an offline test
+      against a simulated device; the delete path has not been exercised on hardware
+- [x] Write down what the panel simulator renders and what it does not — milestone 6.5
       saw a `DisplayValue` binding stay blank there. Decide whether the simulator or the
       physical Quick Bar is the authority for milestone 9's display rows
-- [ ] Where to read failures: which log surface shows a rejected binding or a failed
+      — decided: the physical bar is the authority. The owner deferred the panel check,
+      so **no display has been observed rendering at all**, and milestone 9 must confirm
+      the braced-reference mechanism before trusting the v1 layout (§9.4)
+- [x] Where to read failures: which log surface shows a rejected binding or a failed
       attach, and how to correlate timestamps (the device clock runs behind UTC)
-- [ ] **Stop rule.** If any step above is not settled in three attempts, stop and write
+      — `GET /api/logpackage/stream/reactor` (SSE). It shows attaches but **nothing**
+      about bindings: bad ParentIDs, parameters and cores all import silently
+- [x] **Stop rule.** If any step above is not settled in three attempts, stop and write
       down what is unknown and what was tried. Do not iterate blind — that is the failure
       mode this milestone exists to prevent
-- [ ] Record site-specific recipes in `reference/tools/README.md` (git-ignored) and
+      — not hit. The one dead end (Reactor's behavior-recommendation API) was abandoned
+      after two attempts and recorded as a remote-attach limitation in §9.4
+- [x] Record site-specific recipes in `reference/tools/README.md` (git-ignored) and
       protocol-level facts in IMPLEMENTATION.md §9.4
 
 **Gate G8 (agent-assertable):**
-- [ ] One scripted command imports the v1 binding project; a text dump of the
-      configuration asserts every v1 parameter appears bound
-- [ ] One scripted command restores the baseline; asserted by comparing the project list
-      and active project against the backup taken at the start
-- [ ] IMPLEMENTATION.md §9.4 gives, for every v1 parameter, the behavior `ParentID` and
+- [x] One scripted command imports the v1 binding project; a text dump of the
+      configuration asserts every v1 parameter appears bound — `v1project.py deploy`
+      then `assert`: "12/12 v1 parameters bound, 7 keys, 0 problems", exit 0, run on the
+      device. The assertion reads the project back off the device and checks it against
+      the core's live catalog. `adversarial-validator` then showed the first version
+      passed six classes of dead binding, including the silent-failure class §9.4 exists
+      to warn about; it now also checks layer import, `HWCKeyMap` and
+      `SectionConfig.HWCKeys` membership, dimension-index range, device ID,
+      behavior/parameter type fit, the active project, and that our core is Connected.
+      Thirteen failure classes are covered by an offline test and the baseline still
+      passes clean; the strengthened version has not been re-run on the device
+- [x] One scripted command restores the baseline; asserted by comparing the project list
+      and active project against the backup taken at the start — `qb.py restore`
+      reports "RESTORE OK" with the three original projects, their original display
+      names, and `netio` active. A project on the device but absent from the backup now
+      fails the check and is deleted, rather than being noted and passed
+- [x] IMPLEMENTATION.md §9.4 gives, for every v1 parameter, the behavior `ParentID` and
       the `Raw` reference string used to bind it — or names the ones still unknown
-- [ ] `reference/backups/<date>/` holds a pre-change export of every project on the device
-- [ ] `git status --porcelain` shows only documentation changes
+- [x] `reference/backups/<date>/` holds a pre-change export of every project on the device
+      — `reference/backups/2026-08-24-m8-pre/`, taken by `qb.py backup` before any change
+- [x] `git status --porcelain` shows only documentation changes
 
 ---
 
@@ -480,9 +513,15 @@ painful. Work in small steps and report after each.
       `record_2track`, `snapshot_up` / `snapshot_down`
 - [ ] Confirm feedback in the other direction: change each value from a second WebSocket
       client and see the panel follow (button LED, fader position, displays)
-- [ ] **Resolve the two 6.5 unknowns:** whether `channel_fader_db` renders on a display
-      binding, and whether `RecommendedParamForTitleDisplay` puts the channel name on the
-      panel
+- [ ] **Resolve the two 6.5 unknowns — do this first, the v1 layout depends on it.**
+      Milestone 8 answered the second one negatively: nothing in Reactor reads
+      `RecommendedParamForTitleDisplay`, so companions are placed as braced references
+      instead (§9.4). What is still unknown is whether that braced form renders — no
+      display has ever been observed working on this panel. Check the channel name in a
+      `Title`, the dB reading in a `Textline1`, and `record_busy` in a `Textline2`, since
+      the v1 bindings extrapolate past the one shipped example on all three counts. If it
+      does not render, fall back to `SKAARHOJ:DisplayValue` keys on a second page and
+      record the cost
 - [ ] Power-cycle the mixer with the panel attached (PDU output 3): Reactor indicates the
       disconnect and blocks output, recovery is automatic, and nothing pressed while the
       mixer was off fires when it returns
