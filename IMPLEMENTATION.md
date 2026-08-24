@@ -564,6 +564,48 @@ the milestone's hardware drives used the same grpc-web `Set` those controls emit
   back; the pre-test live values were restored by hand). Snapshot testing on a console
   that is in use carries this hazard.
 
+## 9.3 Reactor remote-core attach results (milestone 6.5)
+
+Run 2026-08-24 against the owner's QuickBar (Reactor v2.2.7-pre5) with our core
+running in the dev container and connected to the real Ui16. The core was reached
+through a TCP forwarder on a site PC (port 8502), so Reactor dialed a LAN address
+that relayed to the container. **No package was installed on the QuickBar.**
+
+**Result: Reactor attaches to a bare, non-BluePill core and controls hardware through it.**
+
+| Check | Result | Evidence |
+|---|---|---|
+| Attach path exists without an install | PASS | Add Device → Add Manually → "Remote or Unknown" → single Address field (port 8502 implied) → Confirm; backed by `POST /rapi/connectUnknownDevice` |
+| Core attaches and reports Connected | PASS | Home shows `Soundcraft Ui @ <relay>`, device `Ui16-test`, "(configured by remote core)", `Address: 192.168.1.4`, `Device ID: 1`, **Connected** |
+| Reactor takes its parameter catalog from the core | PASS | Device labeled "(configured by remote core)"; bindings resolved our parameter names |
+| Control reaches the real mixer | PASS | Observer WebSocket logged `SETD^i.0.mute^0`, `^1`, `SETD^i.0.mix^0.102`, `^0.097` during the panel-simulator session |
+| Feedback renders in Reactor | PASS | The mute button rendered its active (green) state in the Simulator |
+| dB companion text on a display binding | **NOT SHOWN** | A `SKAARHOJ:DisplayValue` binding to `channel_fader_db` was configured, but the simulator's displays stayed blank. Unresolved: binding vs. simulator-rendering limitation |
+| Channel-name title (`RecommendedParamForTitleDisplay`) | **UNTESTED** | No observation captured |
+| Discovery finds a bare core | FAIL (expected) | "Discover Devices" found nothing in 25 s — different subnet, and our core announces nothing. Manual address entry is the path |
+
+Round-trip latencies were not captured. The run ended when the driving agent died
+on an API error; state was salvaged and restored afterwards (project list back to
+its three originals, mixer values byte-identical to baseline, verified from a fresh
+connection).
+
+### Panel binding syntax (recovered from the exported test project)
+
+A project export (`.rpj`) carries the binding, so bindings can be authored as JSON
+and imported instead of clicked together in the Configuration UI:
+
+```json
+"HWCBehaviors": {
+  "X1": {"ParentID": "SKAARHOJ:Toggle",       "IOReference": {"Raw": "DC:skaarhoj_soundcraft/1/channel_mute/1/"}},
+  "X2": {"ParentID": "SKAARHOJ:StepChange",   "IOReference": {"Raw": "DC:skaarhoj_soundcraft/1/channel_fader/1/"}},
+  "X3": {"ParentID": "SKAARHOJ:DisplayValue", "IOReference": {"Raw": "DC:skaarhoj_soundcraft/1/channel_fader_db/1/"}}
+}
+```
+
+`Raw` is `DC:<coreName>/<deviceID>/<parameterName>/<dimensionIndex>/`. Behaviors seen:
+`SKAARHOJ:Toggle` (binary), `SKAARHOJ:StepChange` (float), `SKAARHOJ:DisplayValue`
+(text/value display).
+
 ## 10. Decision log
 
 Format: `DECISION: <date> — <topic> — <decision> — <rationale>`

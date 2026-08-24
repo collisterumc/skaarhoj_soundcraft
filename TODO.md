@@ -279,20 +279,29 @@ do not explain how one port serves multiple cores or whether Reactor will attach
 bare core on a generic machine — that is not knowable from the docs, so this milestone
 settles it by experiment. Requires the owner and the Blue Pill on the same subnet.
 
-- [ ] Run the core in the dev container (listens on `:8502`); on the Blue Pill, add the
+- [x] Run the core in the dev container (listens on `:8502`); on the Blue Pill, add the
       core with the dev machine's IP as Address (manual entry; also try the
       "Shared Core" discovery path and note whether the bare core is discovered)
-- [ ] If Reactor attaches: drive mute, fader, snapshot up/down, and record from the
+      — works via a TCP forwarder on a site PC; discovery finds nothing (expected),
+      manual entry under "Remote or Unknown" is the path (IMPLEMENTATION.md §9.3)
+- [x] If Reactor attaches: drive mute, fader, snapshot up/down, and record from the
       browser panel simulator against the Ui16; note per-parameter results, including
       whether `channel_fader` pairs per-channel with `channel_fader_db` on displays
-- [ ] Document the outcome: a working no-install dev flow in README, or a dated
+      — mute and fader driven and confirmed on the wire; button feedback rendered.
+      Snapshot/record not exercised. The dB display binding produced no visible text
+      in the simulator, and the channel-name title was never observed — both carried
+      to milestone 7's Reactor end-to-end item
+- [x] Document the outcome: a working no-install dev flow in README, or a dated
       Decision-log entry that remote attach needs a real Blue Pill host and testing
-      goes through `.ipks` installs
+      goes through `.ipks` installs — results in IMPLEMENTATION.md §9.3, including the
+      panel binding syntax so configurations can be authored as JSON and imported
 
 **Gate G6.5 (agent-assertable):**
-- [ ] Either a log/trace shows Reactor on the Blue Pill controlling the Ui16 through the
+- [x] Either a log/trace shows Reactor on the Blue Pill controlling the Ui16 through the
       dev-container core (panel-simulator action → mixer change), or a dated `DECISION:`
-      entry records that this path is unsupported and why
+      entry records that this path is unsupported and why — observer WebSocket captured
+      `SETD^i.0.mute^0`, `^1`, `SETD^i.0.mix^0.102`, `^0.097` from simulator actions
+      while the core ran in the dev container (2026-08-24)
 
 ---
 
