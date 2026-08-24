@@ -127,9 +127,9 @@ findings in [IMPLEMENTATION.md](IMPLEMENTATION.md) §9.
 - [x] No probe/test code exists in the repo: `git status --porcelain` shows only
       documentation changes
 
-**Carried forward:** mixer power-cycle behavior (TCP FIN vs. silent drop) is unverified —
-exercise it in milestone 7's soak test. The mixer's own web UI was never driven directly;
-feedback was proven with a second WebSocket client instead.
+**Carried forward:** the mixer's own web UI was never driven directly; feedback was proven
+with a second WebSocket client instead. Mixer power-cycle behavior was resolved in
+milestone 7 — it is a silent drop, detected by the read deadline (IMPLEMENTATION.md §9.6).
 
 ---
 
@@ -355,36 +355,65 @@ that an end-to-end failure cannot be blamed on reconnect or resync behavior.
 Mixer power is switched by a network PDU outlet. Its address, credentials, which outlet,
 and the read/write API calls are all in `reference/site.md`. Never switch another outlet.
 
-- [ ] Confirm the PDU accepts writes before planning around it: the NETIO JSON API is
+Results and evidence: [IMPLEMENTATION.md](IMPLEMENTATION.md) §9.6. Note recorded there and
+worth knowing before reading any log: this container's wall clock steps, so all timings
+are monotonic intervals measured inside a single process.
+
+- [x] Confirm the PDU accepts writes before planning around it: the NETIO JSON API is
       read-open but writes need M2M write access enabled. If writes are refused, record
       that and fall back to asking the owner to switch the outlet by hand
-- [ ] Reconnect soak: ≥ 3 mixer power-cycles via output 3. Assert per cycle — the read
+      — writes accepted with the M2M credentials; output 3 switched off and on, confirmed
+      by its own `State`/`Current` readings
+- [x] Reconnect soak: ≥ 3 mixer power-cycles via output 3. Assert per cycle — the read
       deadline detects the loss, `connection` goes 0 then 1, the store and snapshot cache
       are cleared, no command is replayed at power-on, and the post-resync store matches a
       fresh independent dump of the mixer
-- [ ] **Close the milestone-2 carry-forward:** record whether a power cut produces a TCP
+      — four cuts (three ~30 s, one 120 s); detect 5.146–5.210 s, recover 27.05–28.46 s,
+      every resync matched a fresh 2746-key mixer capture
+- [x] **Close the milestone-2 carry-forward:** record whether a power cut produces a TCP
       FIN or silent death, and how long detection actually takes, in IMPLEMENTATION.md §9
-- [ ] Network pull without touching power: cut the TCP path abruptly (`wsproxy.py` in
+      — silent death; the socket stays `ESTABLISHED` with no FIN or RST and only the 5 s
+      read deadline notices. A FIN does reach the socket ~20 s later, but a packet capture
+      attributes it to a middlebox on the container's route, not to the mixer
+- [x] Network pull without touching power: cut the TCP path abruptly (`wsproxy.py` in
       `reference/tools/`) and assert the same recovery. Also cover a mixer-initiated
       reboot if the mixer offers one
-- [ ] Writes issued while disconnected are discarded, not queued — assert no wire traffic
+      — three kill modes through a logging proxy (`m7proxy.py`): reset 0.720 s, clean
+      close 0.050 s, black-hole 5.024 s; all recovered and resynced clean. The Ui16
+      exposes no reboot command, so a mixer-initiated close was reproduced as the clean-
+      close mode instead
+- [x] Writes issued while disconnected are discarded, not queued — assert no wire traffic
       at reconnect beyond the normal `ALIVE` / `SHOWLIST` opening
-- [ ] Multi-device: configure the real Ui16 alongside a second simulated mixer
+      — wire proof covers the three path cuts, where the core sent only `ALIVE`,
+      `SHOWLIST` and `SNAPSHOTLIST`. The four power cuts ran against the mixer's own
+      address with no proxy in the path, so there they rest on the written value returning
+      unchanged and the end-of-run state matching the baseline
+- [x] Multi-device: configure the real Ui16 alongside a second simulated mixer
       (`fakemixer66.py`), ideally as a different model so dimension counts differ. Assert
       no cross-talk — a write to device 2 never appears on device 1's wire, each device
       has its own `connection` parameter, and powering one down leaves the other serving
-- [ ] Cross-compile for the Blue Pill: `GOOS=linux GOARCH=arm64 CGO_ENABLED=0`; document
+      — Ui16 (14 channels) beside a simulated Ui12 (10 channels); writes stayed on their
+      own wire in both directions, and device 2 logged zero `connection` transitions while
+      device 1's mixer was dark
+- [x] Cross-compile for the Blue Pill: `GOOS=linux GOARCH=arm64 CGO_ENABLED=0`; document
       the command in the README
 
 **Gate G7 (agent-assertable):**
-- [ ] `go test ./...` green; `go vet` clean; binaries build for the host and for
+- [x] `go test ./...` green; `go vet` clean; binaries build for the host and for
       `linux/arm64` (`file` reports an ARM aarch64 ELF)
-- [ ] Soak log: ≥ 3 forced disconnects, each with automatic recovery and a post-resync
+- [x] Soak log: ≥ 3 forced disconnects, each with automatic recovery and a post-resync
       store fingerprint equal to a fresh direct mixer dump (`fpcap.py`)
-- [ ] IMPLEMENTATION.md §9 states the observed power-off failure mode and detection time,
+      — seven forced disconnects (four power, three path). The comparison is per-parameter
+      over gRPC against a fresh mixer capture (`m7compare.py`): it checks the 46 v1 values
+      the core serves — the store's only consumers — against the mixer's full ~2746-key
+      dump, and so proves the core agrees with the mixer. `fpcap.py`'s full-store
+      fingerprint was not compared; this is a deliberate narrowing to the parameter
+      surface, recorded in IMPLEMENTATION.md §9.6
+- [x] IMPLEMENTATION.md §9 states the observed power-off failure mode and detection time,
       replacing the "power-off behavior still untested" carry-forward
-- [ ] Multi-device trace shows zero device-2 paths on device 1's connection and vice versa
-- [ ] PDU output 3 reads `State: 1` at the end of the run
+- [x] Multi-device trace shows zero device-2 paths on device 1's connection and vice versa
+- [x] PDU output 3 reads `State: 1` at the end of the run — 157 mA, 13 W, its starting
+      reading
 
 ---
 

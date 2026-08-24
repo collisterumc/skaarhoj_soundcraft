@@ -266,12 +266,13 @@ reappearing is **routine**, not an error condition:
 - **Reconnect forever.** The per-device loop never exits; 2 s backoff between attempts.
   Log the transition once per state change (connected ↔ disconnected), not per retry
   attempt, to avoid log spam during long power-off periods.
-- **Dead-link detection.** A power cut usually produces no TCP FIN, so a blocked read can
-  hang indefinitely. Use a read deadline of ~5 s. The mixer chatters continuously:
-  measured `RTA` ~27 Hz, `VU2` ~6 Hz, `2::` ~13 Hz, worst observed gap 2.65 s. Silence
-  therefore means the link is dead, so drop and redial. (`ALIVE` is client→mixer only.)
-  Idle traffic was confirmed 2026-08-23. Behavior on an actual power cut is still
-  untested (§9).
+- **Dead-link detection.** A power cut produces no TCP FIN, so a blocked read can hang
+  indefinitely. Use a read deadline of ~5 s. The mixer chatters continuously: measured
+  `RTA` ~27 Hz, `VU2` ~6 Hz, `2::` ~13 Hz, worst observed gap 2.65 s. Silence therefore
+  means the link is dead, so drop and redial. (`ALIVE` is client→mixer only.) Idle traffic
+  was confirmed 2026-08-23. Real power cuts were measured 2026-08-24 and are exactly the
+  silent case: the socket stays `ESTABLISHED` with no FIN or RST, and the deadline detects
+  the loss in 5.15–5.21 s (§9.6).
 - **On disconnect:** set `connection`=0. Reactor then indicates the state and blocks the
   other parameters (none set `controllableWhileDisconnected`). Clear the in-memory store
   and snapshot cache so no stale state is served or used for gating. The record toggle and
@@ -450,7 +451,7 @@ values first and restored them afterwards; restores were verified against a full
 | `var.recBusy` covers the start/stop transition | **DEVIATION** | It does not. On **start** `recBusy` never fires at all. On **stop** it pulses `SETD^var.recBusy^1` (+151 ms) → `^0` (+227 ms), a ~76 ms window that closes in the same batch as `isRecording^0`. It cannot guard the 206 ms command-to-state race. See §5 |
 | Idle traffic suitable for read-deadline dead-link detection | PASS | Continuous `RTA` (~27 Hz), `VU2` (~6 Hz), `2::` (~13 Hz). Max observed gap between frames 2.65 s; p99 0.26 s. A 5 s read deadline is safe |
 | Keepalive required | PASS | A client that sends nothing is closed by the mixer after **19.4 s** (telemetry to it stops ~8 s in). `ALIVE` every 5 s keeps it open, as does replying `2::` to the mixer's `2::` heartbeats. The specified 1 s `ALIVE` is comfortably sufficient |
-| Power-off behavior (TCP FIN vs. silent drop) | **UNTESTED** | Requires physically cutting mixer power; deferred at the owner's request. The 5 s read deadline is designed to cover both cases regardless |
+| Power-off behavior (TCP FIN vs. silent drop) | PASS (silent drop) | Resolved 2026-08-24 by cutting mixer mains four times. Data stops within ~0.2 s and the socket stays `ESTABLISHED`; no FIN or RST arrives at the cut. Only the read deadline notices. Full results in §9.6 |
 | Offline Ui24R demo as a test target | **UNTESTED** | Not probed; real Ui16 hardware was available, which §6 makes the gate authority anyway |
 
 ### 9.1 Additional findings not anticipated by the spec
@@ -635,6 +636,146 @@ This section must end up carrying:
 To be filled by milestone 9: one row per v1 parameter, PASS/FAIL/LIMITATION, each with a
 captured evidence excerpt, plus a row for a mixer power-cycle with the panel attached.
 This section supersedes the two unresolved rows in §9.3.
+
+## 9.6 Reconnect and multi-device soak results (milestone 7)
+
+Run 2026-08-24 in the dev container against the Ui16, firmware unchanged since §9. No
+Blue Pill and no Reactor were in the loop. Mixer mains were switched by the site PDU.
+Every measurement below is a **monotonic** interval: this container's wall clock steps
+(observed stepping 150 ms in one minute, and about 20 s during one run), so wall-clock
+timestamps cannot be diffed and must never be correlated across processes. Anything
+timing-sensitive runs inside a single process.
+
+### Power-cycle soak
+
+Four cuts, three of about 30 s and one of 120 s, each driven end to end from one process
+that switched the PDU, held a gRPC subscription on `connection`, wrote to the core while
+the mixer was dark, and compared the resynced core against a fresh independent mixer
+capture.
+
+| Cycle | Outage | Detect (cut → `connection`=0) | Recover (power-on → `connection`=1) | Resync compare | Dark writes landed |
+|---|---|---|---|---|---|
+| 1 | 30.6 s | 5.160 s | 27.876 s | MATCH | no |
+| 2 | 30.7 s | 5.210 s | 27.210 s | MATCH | no |
+| 3 | 30.8 s | 5.146 s | 27.051 s | MATCH | no |
+| 4 | 120.5 s | 5.174 s | 28.459 s | MATCH | no |
+
+"MATCH" means all 46 v1 parameter values read from the core over gRPC equalled a fresh
+2746-key WebSocket dump taken on a separate connection to the mixer, checked per channel
+for mute, fader and name, plus master fader, current snapshot, recording and busy. Faders
+matched to within float-print noise (1e-6 on the 0–100 scale), not merely to within the
+0.1 `acceptanceThreshold` that would also have been defensible.
+
+Two limits on what that proves. It covers the 46 values the core serves, not the store's
+full contents — the v1 parameters and the snapshot cache are the store's only consumers,
+so the surface a Reactor panel can reach is fully covered, but a stale key nothing reads
+would go unnoticed. And mixer state is invariant across a power cycle, so MATCH shows the
+core agrees with the mixer; it cannot by itself distinguish a store that was cleared and
+resynced from one that was never cleared. Store clearing is covered by the G3 unit tests.
+
+Detection time is the read deadline doing its job. The mixer's last data arrives about
+0.15 s after mains is cut, and the 5 s deadline fires from there. Recovery time is
+dominated by the mixer's own boot: a bare TCP connect to port 80 is refused for about
+25 s after power-on, and the core adds at most one 2 s backoff on top.
+
+### What a power cut actually looks like on the wire
+
+This closes the milestone-2 carry-forward.
+
+- **The mixer dies silently.** An independent probe socket held through the cut stayed in
+  `ESTABLISHED` for the whole dark period. No FIN, no RST, no ICMP error, and the probe's
+  own 1 Hz keepalive `sendall` never failed. A blocked read would hang indefinitely, so
+  the read deadline is the only thing that can detect this.
+- **A FIN does arrive, roughly 20 s later, and it is not the mixer's.** In all four cycles
+  the probe socket received EOF 19.96–20.05 s after the last mixer data. A packet capture
+  shows these as `<mixer-ip>.80 > container: Flags [F.]` carrying a TCP timestamp that
+  *continues* the pre-cut clock rather than restarting, from a device measured at 0 mA at
+  the time. Later SYNs during the outage drew `[R.]` packets with no TCP timestamp option
+  at all, unlike every genuine mixer packet. Most telling, the SYN-ACKs *after* the mixer
+  rebooted continue that same timestamp clock, which a rebooted mixer cannot do. So every
+  session the container opens to that address is terminated by a middlebox on the route
+  between its subnet and the mixer's, spoofing the mixer's address. This is a property of
+  the dev container's route, not of the mixer, and the core never depends on it: it has
+  already dropped and redialled 15 s earlier.
+
+### Recovery from a broken TCP path, power untouched
+
+A logging proxy stood in for the mixer's address so the core's outbound traffic could be
+read in full. Three kill modes, each recovered and resynced clean.
+
+| Cut mode | What the core saw | Detect | Recover | Resync compare |
+|---|---|---|---|---|
+| `rst` | `ECONNRESET` on the read | 0.720 s | 16.804 s | MATCH |
+| `fin` | clean close, read returns EOF | 0.050 s | 10.318 s | MATCH |
+| `blackhole` | sockets open, data stops | 5.024 s | 21.086 s | MATCH |
+
+Recovery after `blackhole` is slower than after `fin` because each redial into a path that
+accepts TCP but never completes the WebSocket handshake burns gorilla's full 5 s handshake
+timeout before the 2 s backoff.
+
+### Writes into a dead link are dropped, never replayed
+
+All seven cuts wrote `channel_mute` and `channel_fader` while the link was down. The
+evidence differs by phase, because the logging proxy only stood in the mixer's place for
+the three path cuts — the four power cuts ran against the mixer's own address, so no wire
+log exists for them.
+
+- **Path cuts — direct wire proof.** Over the three cuts the core's entire outbound
+  traffic was 149 `ALIVE`, 4 `SHOWLIST` and 8 `SNAPSHOTLIST`. Zero
+  `SETD`/`SETS`/`LOADSNAPSHOT`/`RECTOGGLE`.
+- **Power cuts — proof by effect.** The written channel's value came back identical to its
+  pre-cut reading in all four cycles, the resynced core matched a fresh mixer capture, and
+  the mixer's v1 state at the end of the run was byte-identical to the baseline taken
+  before the first cut. A landed replay would have moved one of those.
+- **Both — corelib gives up during the outage.** Each discarded write is followed within
+  about 100 ms by `Failed to set parameter … in 2 tries on device 1`, logged while the
+  link is still down. Nothing is left pending when it returns.
+
+A WebSocket observer watched the mixer for the whole session and recorded exactly two
+state changes, both deliberate test toggles. It is corroboration rather than proof: it
+reconnects within ~0.1 s of the core and then absorbs 3 s as initial dump, so its blind
+window covers the first seconds of every reconnect — the very window a replay would use.
+
+The reconnect opening sequence is identical every time:
+
+```
+core->mixer SHOWLIST
+mixer->core SETS^var.currentShow^Training
+core->mixer SNAPSHOTLIST^Training
+mixer->core SHOWLIST^2023-10-19^…^Training
+core->mixer SNAPSHOTLIST^Training
+mixer->core SNAPSHOTLIST^Training^2024-03-17^…^2026-08-22
+core->mixer ALIVE          (1 Hz from here on)
+```
+
+`SNAPSHOTLIST` is requested twice on every connect: once when the dump's
+`SETS^var.currentShow` arrives and once when the `SHOWLIST` reply does. Both name the same
+show and the second reply simply overwrites the first, which is why the cache tolerates
+it. This also confirms the cache is rebuilt from the mixer after every disconnect rather
+than carried across.
+
+### Two devices, one core
+
+Device 1 was the real Ui16 (model 2, 14 channels), device 2 a simulated Ui12 (model 1, 10
+channels) so the dimension counts differ. `GetParameterDetails` reported
+`dim(count=14)` for model 2 and `dim(count=10)` for model 1, and `Get` returned 14 and 10
+`channel_mute` instances respectively.
+
+- **No cross-talk in either direction.** Writing `channel_mute[3]` and `channel_fader[3]`
+  on device 2 produced `SETD^i.2.mute^0` and `SETD^i.2.mix^0.15` on device 2's wire and
+  nothing but `ALIVE` on device 1's. Writing `channel_mute[5]` on device 1 produced
+  `SETD^i.4.mute^1` then `^0` on device 1's wire and nothing at all on device 2's.
+- **Each device carries its own `connection`.** Cutting mixer power took device 1 to 0
+  after 5.143 s and back after 28.310 s; device 2's `connection` recorded **zero**
+  transitions across the whole run and kept accepting writes while device 1 was dark
+  (`channel_fader[4]`=33 → `SETD^i.3.mix^0.33` on device 2's wire).
+
+### Restore proof
+
+The core's 46 v1 values for the Ui16 at the end of the run were byte-identical to the
+baseline dump taken before the first power cut. The independent observer's two recorded
+changes were the deliberate cross-talk toggle and its restore. PDU output 3 finished at
+`State: 1`, 157 mA, 13 W — the same reading it started at.
 
 ## 10. Decision log
 

@@ -46,6 +46,23 @@ target/current model.
 | Soundcraft Ui16 | 12 | No multitrack recording; **integration-test hardware for this project** |
 | Soundcraft Ui24R | 24 | Multitrack recording, VCAs, matrix mode; supported from spec, untested on hardware |
 
+## Building
+
+Go 1.25 or newer. A plain `go build` produces a binary for the machine you are on:
+
+```sh
+go build ./...
+```
+
+The Blue Pill is arm64 and runs the binary without a C library, so cross-compile it
+statically:
+
+```sh
+GOOS=linux GOARCH=arm64 CGO_ENABLED=0 go build -o skaarhoj_soundcraft .
+```
+
+`file` should report `ELF 64-bit LSB executable, ARM aarch64, … statically linked`.
+
 ## Repository layout
 
 | Path | Purpose |
