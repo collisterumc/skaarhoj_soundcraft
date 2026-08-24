@@ -451,7 +451,8 @@ before making any change (rule in `reference/site.md`).
       extras, which milestone 9 needs, since leaving `m8v1` behind would point a live
       device core at the dev container), and the name repair aborted if the project it
       parked on also needed repair. The repair ordering is covered by an offline test
-      against a simulated device; the delete path has not been exercised on hardware
+      against a simulated device; the delete path was exercised on hardware twice in
+      milestone 9 and removed `m8v1` correctly both times
 - [x] Write down what the panel simulator renders and what it does not — milestone 6.5
       saw a `DisplayValue` binding stay blank there. Decide whether the simulator or the
       physical Quick Bar is the authority for milestone 9's display rows
@@ -481,7 +482,7 @@ before making any change (rule in `reference/site.md`).
       `SectionConfig.HWCKeys` membership, dimension-index range, device ID,
       behavior/parameter type fit, the active project, and that our core is Connected.
       Thirteen failure classes are covered by an offline test and the baseline still
-      passes clean; the strengthened version has not been re-run on the device
+      passes clean; milestone 9 ran the strengthened version on the device and it passed
 - [x] One scripted command restores the baseline; asserted by comparing the project list
       and active project against the backup taken at the start — `qb.py restore`
       reports "RESTORE OK" with the three original projects, their original display
@@ -505,39 +506,53 @@ on SKAARHOJ.
 owner follows along and can intervene; a long opaque subagent run is what made 6.5
 painful. Work in small steps and report after each.
 
-- [ ] Attach the dev-container core through the relay; confirm Reactor reports Connected
-      and takes its parameter catalog from the core
-- [ ] Import the milestone-8 binding project; confirm every binding resolves
-- [ ] Drive each v1 parameter from the panel and confirm the effect on the mixer through
+- [x] Attach the dev-container core through the relay; confirm Reactor reports Connected
+      and takes its parameter catalog from the core — `skaarhoj_soundcraft @
+      192.168.12.230: Connected`, 62 values over 12 parameters
+- [x] Import the milestone-8 binding project; confirm every binding resolves
+      — `v1project.py assert`: 12/12 bound, 7 keys, 0 problems, checked against the live
+      catalog. First run of milestone 8's strengthened assert on the device
+- [x] Drive each v1 parameter from the panel and confirm the effect on the mixer through
       an observer WebSocket: `channel_mute`, `channel_fader`, `master_fader`,
-      `record_2track`, `snapshot_up` / `snapshot_down`
-- [ ] Confirm feedback in the other direction: change each value from a second WebSocket
+      `record_2track`, `snapshot_up` / `snapshot_down` — all six PASS, 52–244 ms to the
+      wire, both directions each. Snapshot stepping wrapped at both ends
+- [x] Confirm feedback in the other direction: change each value from a second WebSocket
       client and see the panel follow (button LED, fader position, displays)
-- [ ] **Resolve the two 6.5 unknowns — do this first, the v1 layout depends on it.**
-      Milestone 8 answered the second one negatively: nothing in Reactor reads
-      `RecommendedParamForTitleDisplay`, so companions are placed as braced references
-      instead (§9.4). What is still unknown is whether that braced form renders — no
-      display has ever been observed working on this panel. Check the channel name in a
-      `Title`, the dB reading in a `Textline1`, and `record_busy` in a `Textline2`, since
-      the v1 bindings extrapolate past the one shipped example on all three counts. If it
-      does not render, fall back to `SKAARHOJ:DisplayValue` keys on a second page and
-      record the cost
-- [ ] Power-cycle the mixer with the panel attached (PDU output 3): Reactor indicates the
+      — all eight read paths PASS, 72–291 ms, proven by the panel's own redrawn bitmaps
+- [x] **Resolve the two 6.5 unknowns — do this first, the v1 layout depends on it.**
+      — both resolved PASS. The braced-reference form renders, on all three axes §9.4
+      flagged: other display lines, literal dimension indices, and a Binary as text. The
+      `SKAARHOJ:DisplayValue` fallback is not needed and the v1 layout stands.
+      **The simulator did not need a human**: it pushes each key's rendered 64×32 display
+      as a PNG over its WebSocket, so Reactor's rendering is directly observable (§9.5).
+      One limitation: `record_busy` renders as the literal `false`. Not established, and
+      not knowable from the docs: whether the physical glass shows that same bitmap —
+      the bar itself was never looked at (§9.5 "Scope of that evidence")
+- [x] Power-cycle the mixer with the panel attached (PDU output 3): Reactor indicates the
       disconnect and blocks output, recovery is automatic, and nothing pressed while the
-      mixer was off fires when it returns
-- [ ] Restore: mixer values byte-identical to baseline from a fresh connection, QuickBar
-      back to its baseline project set
-- [ ] README: Installation (build from source), Configuration, and Parameters sections
-- [ ] Record results in IMPLEMENTATION.md § "Reactor end-to-end results"
+      mixer was off fires when it returns — MTR1 red 5.27 s after the cut, green again
+      28.9 s after power-on. Three presses while dark produced exactly three core-log
+      rejections during the outage and left `i.0.mute` unchanged at `1`
+- [x] Restore: mixer values byte-identical to baseline from a fresh connection, QuickBar
+      back to its baseline project set — fingerprint `9ce4ce91…`, zero differing keys;
+      `RESTORE OK`. Snapshot stepping needed a hand repair of two live-drifted faders
+- [x] README: Installation (build from source), Configuration, and Parameters sections
+- [x] Record results in IMPLEMENTATION.md § "Reactor end-to-end results" — §9.5
 
 **Gate G9 (agent-assertable):**
-- [ ] The results table has one row per v1 parameter with PASS/FAIL/LIMITATION and a
+- [x] The results table has one row per v1 parameter with PASS/FAIL/LIMITATION and a
       captured evidence excerpt; no FAIL row lacks a linked Decision-log entry
-- [ ] The dB-display row and the channel-title row are each resolved — neither is left
-      "NOT SHOWN" or "UNTESTED"
-- [ ] A power-cycle-with-panel-attached row is present and records what Reactor showed
-- [ ] Restore proof recorded for both the mixer and the QuickBar
-- [ ] `grep -E "^## (Installation|Configuration|Parameters)" README.md` finds all three
+      — §9.5 carries two tables (panel→mixer, mixer→panel) covering all 12 v1 parameters.
+      Zero FAIL rows; one LIMITATION (`record_busy` renders as the literal `false`)
+- [x] The dB-display row and the channel-title row are each resolved — neither is left
+      "NOT SHOWN" or "UNTESTED" — both PASS at Reactor's rendering. dB: `-53.4 dB` →
+      `-11.6 dB` on an external write. Title: `ACO1`, and an external rename moved X1 and
+      X2 together. The physical glass was not looked at; §9.5 records that limit
+- [x] A power-cycle-with-panel-attached row is present and records what Reactor showed
+      — MTR1 `#8dfd29` → `#ed2828` → `#8dfd29`, with detect and recover intervals
+- [x] Restore proof recorded for both the mixer and the QuickBar — mixer fingerprint
+      `9ce4ce91…` with zero differing non-volatile keys; `RESTORE OK` on the QuickBar
+- [x] `grep -E "^## (Installation|Configuration|Parameters)" README.md` finds all three
 
 ---
 

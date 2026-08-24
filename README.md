@@ -46,12 +46,13 @@ target/current model.
 | Soundcraft Ui16 | 12 | No multitrack recording; **integration-test hardware for this project** |
 | Soundcraft Ui24R | 24 | Multitrack recording, VCAs, matrix mode; supported from spec, untested on hardware |
 
-## Building
+## Installation
 
-Go 1.25 or newer. A plain `go build` produces a binary for the machine you are on:
+Build from source. Go 1.25 or newer; a plain `go build` produces a binary for the machine
+you are on:
 
 ```sh
-go build ./...
+go build -o skaarhoj_soundcraft .
 ```
 
 The Blue Pill is arm64 and runs the binary without a C library, so cross-compile it
@@ -62,6 +63,85 @@ GOOS=linux GOARCH=arm64 CGO_ENABLED=0 go build -o skaarhoj_soundcraft .
 ```
 
 `file` should report `ELF 64-bit LSB executable, ARM aarch64, … statically linked`.
+
+There is no installable package yet: building an `.ipks` for skaarOS needs information only
+SKAARHOJ can supply, so on-device install is on hold (TODO.md milestone 10). In the
+meantime the core runs on any host Reactor can reach, which is how it has been tested.
+
+### Attaching the core to Reactor
+
+Run the binary anywhere on the network. It serves IBeam gRPC on port **8502**. In Reactor,
+add it by hand — a core that is not installed as a package announces nothing, so device
+discovery will not find it:
+
+> Add Device → Add Manually → **Remote or Unknown** → enter the host's IP address (port
+> 8502 is implied) → Confirm
+
+Reactor then pulls the whole parameter catalog, dimensions and labels included, straight
+from the core over gRPC. The device shows as "configured by remote core".
+
+One consequence of not being an installed package: Reactor's binding *authoring* helpers
+(behavior recommendations, parameter info) resolve against an installed core's profile and
+will report the core as not found. Bindings still work — they simply have to be written
+rather than suggested.
+
+## Configuration
+
+On first start the core writes `skaarhoj_soundcraft.toml` next to itself, **in the process's
+working directory**, and populates it with one inactive example device:
+
+```toml
+[[Devices]]
+  Active = true
+  Name = "Ui16"
+  DeviceID = 1
+  ModelID = 2
+  Description = "Front of house"
+  IP = "192.168.1.4"
+```
+
+| Field | Meaning |
+|---|---|
+| `Active` | The core only connects to a device when this is `true`. It defaults to `false`, so a fresh config connects to nothing. |
+| `DeviceID` | Distinguishes devices in parameter references. The first device is `1`. |
+| `ModelID` | `1` = Ui12, `2` = Ui16, `3` = Ui24R. Sets the channel count and gates the Ui24R-only multitrack parameters. |
+| `IP` | The mixer's address. The core speaks plain WebSocket on port 80. |
+
+Add a `[[Devices]]` block per mixer. Each gets its own `connection` parameter and its own
+link, and a write to one never reaches another.
+
+Reactor can also edit this configuration through the core's config schema once attached.
+
+The core reconnects forever with a 2 s backoff, because mixer power-cycling is normal
+operation in the installation this was built for. A power cut is a silent death — no TCP
+FIN — so the link is declared dead by a read deadline about 5 s after the mixer stops
+talking. While disconnected, writes are **discarded rather than queued**: nothing a
+panel operator pressed against a dark mixer fires when it comes back.
+
+## Parameters
+
+Registered for every model unless noted. `<ch>` is a 1-based dimension index covering the
+model's input channels followed by its line-in channels — 14 on a Ui16.
+
+| Parameter | Type | Direction | Notes |
+|---|---|---|---|
+| `channel_mute` | Binary | read/write | Mute per channel |
+| `channel_fader` | Floating 0–100 | read/write | Main-mix level per channel; the wire value is linear 0.0–1.0 |
+| `channel_fader_db` | String | read-only | The same level as a dB reading, e.g. `-53.4 dB` |
+| `channel_name` | String | read-only | The channel name as set on the mixer |
+| `master_fader` | Floating 0–100 | read/write | Master level. The mixer exposes no master mute, so there is no such parameter |
+| `master_fader_db` | String | read-only | Master level as a dB reading |
+| `record_2track` | Binary | read/write | USB 2-track recording toggle, showing actual state |
+| `record_busy` | Binary | read-only | Mixer-reported busy flag. Pulses for about 76 ms on stop and never fires on start, so it is not worth putting on a display |
+| `snapshot_up` / `snapshot_down` | NoValue, Oneshot | write | Step to the adjacent snapshot in the current show, wrapping at both ends |
+| `current_snapshot` | String | read-only | Name of the loaded snapshot |
+| `connection` | ConnectionState | read-only | Mixer link state. Reactor blocks output while it is down |
+| `record_multitrack`, `multitrack_busy`, `multitrack_time` | Binary / Binary / String | mixed | **Ui24R only.** Implemented from spec and untested — no Ui24R hardware |
+
+The read-only string parameters exist to be shown next to the control they describe. On a
+Blue Pill panel they do not need their own key: put a braced reference in a display field,
+for example `{DC:skaarhoj_soundcraft/1/channel_fader_db/1}` in `Textline1`. Reactor does not
+apply the `RecommendedParamFor*` hints on its own.
 
 ## Repository layout
 

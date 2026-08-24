@@ -674,16 +674,17 @@ binding's `FeedbackDefault`:
 }
 ```
 
-**This is not yet proven to render, and milestone 9 must confirm it before anything else.**
-The pattern is taken from SKAARHOJ's own shipped PDU project, but that project uses it
-in exactly one narrower form: `Title` only, never `Textline1`/`Textline2`, and with
-`Var:` substitutions rather than a literal index. The v1 bindings extrapolate on three
-axes at once — other display lines, literal dimension indices, and a Binary
-(`record_busy`) rendered as text. No braced reference has ever been observed rendering on
-this panel: §9.3's dB row is NOT SHOWN, its title row UNTESTED, and milestone 8 did not
-get a look at the hardware. If the extrapolation is wrong, the fallback is one key per
-companion using `SKAARHOJ:DisplayValue`, which costs keys the Quick Bar does not have and
-would force the v1 panel layout onto pages.
+**Confirmed rendering in milestone 9 — see §9.5.** All three axes the v1 bindings
+extrapolated on hold: other display lines (`Textline1`/`Textline2`, not just `Title`),
+literal dimension indices, and a Binary rendered as text. The `SKAARHOJ:DisplayValue`
+fallback is not needed, so the v1 layout stays on one page.
+
+The pattern was taken from SKAARHOJ's own shipped PDU project, which uses it in one
+narrower form only: `Title` only, and with `Var:` substitutions rather than a literal
+index. That is why the extrapolation needed proving.
+
+One wart: `record_busy` is Binary, and a braced reference to it renders the literal
+`false`/`true` rather than words (§9.5).
 
 Because the index is written into the reference, a dimensioned companion pairs
 per-element by construction, so the open question in the 2026-08-24 channel-name entry
@@ -757,22 +758,220 @@ does not track UTC.
 
 ### Simulator versus physical panel
 
-Not settled by observation — the owner deferred the panel check, so milestone 9 resolves
-it with the physical bar in front of them. The decision for milestone 9 is that **the
-physical Quick Bar is the authority for every display row**. Milestone 6.5 saw a
-`DisplayValue` binding stay blank in the simulator while the same session drove real mixer
-changes, so the simulator is treated as evidence for button and LED state only, and a
-blank simulator display is not accepted as a failure.
+**Superseded by §9.5: the simulator resolves display bindings, and is scriptable.** It
+pushes each key's rendered 64×32 display as a PNG over its WebSocket, so what Reactor
+renders for a key can be read directly, with no browser and nobody at the bar.
 
-Note that the 6.5 blank is now explained regardless: that binding pointed a
-`SKAARHOJ:DisplayValue` behavior at `channel_fader_db` and expected the companion wiring
-to fill the display, which nothing does.
+Whether the physical panel's own display shows that same bitmap is **not established** —
+nothing in the SKAARHOJ documentation says so, and it was not observed. What the simulator
+proves is that the binding resolves and Reactor renders the companion value; the last hop
+to the glass is assumed. One glance at the bar would close it.
+
+Milestone 8 had planned the opposite, treating the physical bar as the authority and the
+simulator as evidence for buttons and LEDs only. That came from milestone 6.5 seeing a
+`DisplayValue` binding stay blank in the simulator, which looked like a rendering
+limitation. It was not: that binding pointed a `SKAARHOJ:DisplayValue` behavior at
+`channel_fader_db` and expected the companion wiring to fill the display, which nothing
+does. The blank was a dead binding, and the simulator was reporting it accurately.
 
 ## 9.5 Reactor end-to-end results (milestone 9)
 
-To be filled by milestone 9: one row per v1 parameter, PASS/FAIL/LIMITATION, each with a
-captured evidence excerpt, plus a row for a mixer power-cycle with the panel attached.
-This section supersedes the two unresolved rows in §9.3.
+Run 2026-08-24 against the owner's Quick Bar (Reactor v2.2.7-pre5) with the core in the
+dev container, attached over the milestone-6.5 relay, driving the real Ui16. This section
+supersedes the two unresolved rows in §9.3: both are now resolved PASS.
+
+**Every v1 parameter works end to end in both directions.** The two 6.5 unknowns are
+closed, the braced-reference display mechanism §9.4 could only guess at is confirmed
+rendering, and a power cut with the panel attached recovers with nothing replayed.
+
+### Setup
+
+| Step | Result | Evidence |
+|---|---|---|
+| Core reaches the Ui16 | PASS | `Device 1: connected to mixer at 192.168.1.4 (connection=1)` |
+| Core serves the v1 catalog | PASS | `grpcclient dump 1` returns 62 values over 12 parameters, with real channel names (`channel_name [1] ACO1`) |
+| Reactor attaches over the relay | PASS | `getDeviceCoreStates`: `skaarhoj_soundcraft @ 192.168.12.230: Connected` |
+| Every v1 parameter binds | PASS | `v1project.py assert`: "12/12 v1 parameters bound, 7 keys, 0 problems", exit 0 |
+
+Two milestone-8 caveats are closed. The strengthened `v1project.py assert` had never run
+against the device; it does now and passes clean. `qb.py restore`'s delete path had never
+run on hardware; it removed `m8v1` correctly, twice.
+
+### The simulator is scriptable, and it renders the real display bitmaps
+
+Milestone 8 left the physical Quick Bar as the authority for display rows because a blank
+simulator display had been seen once and could not be told apart from a dead binding. That
+turned out to be the wrong constraint to plan around. The Simulator page is a thin client
+over `ws://<reactor>/ws`, and it pushes **each key's rendered 64×32 display as a PNG**. So
+what Reactor renders for a key is directly observable, with no browser and nobody in front
+of the bar.
+
+**Scope of that evidence.** This proves the binding resolves and Reactor renders the
+companion value. It does **not** prove the physical panel's glass shows the same bitmap:
+no SKAARHOJ documentation states that, and it was not observed. Every row below that says
+"panel" means "Reactor's rendering for that key". The physical Quick Bar was not exercised
+in either direction this milestone — no physical press, no observed physical display or
+LED. A single look at the bar with this project loaded would close the gap.
+
+Two message shapes matter, both bare JSON rather than the `{Command,CommandData}` envelope
+the rest of the UI uses:
+
+```
+send  {"SetSubscriptionPanelIds":"1"}                              subscribe
+send  {"PanelId":1,"Event":{"HWCID":1,                             press, then release
+       "Binary":{"Pressed":true,"Edge":4}}}
+recv  {"HWCid":1,"Color":"#f9f9f9","State":4,"Image":"data:image/png;base64,…"}
+```
+
+Edges are a bitmask: `NO_EDGE 0, TOP 1, LEFT 2, BOTTOM 4, RIGHT 8, ENCODER 16`. A click
+away from a labelled edge sends `BOTTOM`. HWCIDs are positional — X1–X6 are 1–6, MTR1–MTR6
+are 7–12. `simpanel.py`, `panelshot.py`, `m9drive.py` and `m9feedback.py` wrap all of this.
+
+### Panel to mixer
+
+One press per row, with the mixer watched by an independent observer WebSocket. Latency is
+a monotonic interval measured inside a single process, never a diff of two logs (§9.6).
+
+| Parameter | Key | Result | Evidence |
+|---|---|---|---|
+| `channel_mute` | X1 | PASS | `SETD^i.0.mute^0` +52.1 ms; toggled back `^1` +65.1 ms |
+| `channel_fader` | X2 | PASS | `SETD^i.0.mix^0.102` +74.8 ms; down `^0.097` +52.5 ms |
+| `master_fader` | X3 | PASS | `SETD^m.mix^0.727` +80.2 ms; down `^0.722` +78.1 ms |
+| `record_2track` | X4 | PASS | `SETD^var.isRecording^1` +175.1 ms; stop `^0` +162.5 ms |
+| `snapshot_up` | X5 | PASS | `SETS^var.currentSnapshot^2024-03-17` +241.1 ms — wrapped last to first |
+| `snapshot_down` | X6 | PASS | `SETS^var.currentSnapshot^2026-08-22` +243.6 ms — wrapped back |
+
+### Mixer to panel
+
+An outside WebSocket client writes to the mixer; the redrawn PNG is the proof. The
+`channel_mute`, `channel_fader_db`, `master_fader_db` and `connection` rows came from
+`m9feedback.py`. The `record_2track`, `current_snapshot` and `channel_name` rows needed
+`RECTOGGLE`, `LOADSNAPSHOT` and a `SETS` write, which that script could not send at the
+time, so they were run from one-off code with the same structure; their PNGs are retained
+but the exact driver is not.
+
+| Parameter | Result | Evidence |
+|---|---|---|
+| `channel_mute` | PASS | external `SETD^i.0.mute^0` → X1 redrew `On`→`Off` +82.1 ms |
+| `channel_fader_db` | PASS | external `SETD^i.0.mix^0.5` → X2 showed `-11.6 dB` (was `-53.4 dB`) +97.2 ms |
+| `master_fader_db` | PASS | external `SETD^m.mix^0.4` → X3 showed `-18.2 dB` (was `-1.6 dB`) +135.2 ms |
+| `record_2track` | PASS | external `RECTOGGLE` → X4 redrew `Off`→`On` +194.2 ms |
+| `current_snapshot` | PASS | external `LOADSNAPSHOT^Training^2025-03-02` → X5 **and** X6 both showed `2025-03-02` +291.2 ms |
+| `channel_name` | PASS | external `SETS^i.0.name^M9TEST` → X1 and X2 titles both changed +72.2 ms |
+| `connection` | PASS | MTR1 `#8dfd29` green while up, `#ed2828` red while the mixer was dark |
+| `record_busy` | NOT DISPLAYED | rendered as the literal `false` when bound; dropped from the v1 layout by decision, see below |
+
+### The braced-reference display mechanism works
+
+§9.4 extrapolated on three axes at once and warned that none had been observed. All three
+hold:
+
+- **Other display lines.** `Textline1` and `Textline2` both render, not just `Title`.
+- **Literal dimension indices.** `{DC:…/channel_name/1}` resolved to channel 1's name
+  specifically, and the external-rename test moved X1 and X2 together, so a dimensioned
+  companion does pair per-element by construction.
+- **A Binary as text.** It renders — but see the limitation.
+
+A behavior's own default survives where it is not overridden: X4 sets only `Title` and
+`Textline2`, and `Textline1` still showed the toggle's own `Off`/`On`. So a companion is
+added to a key's default feedback rather than replacing it.
+
+The fallback §9.4 held in reserve — one `SKAARHOJ:DisplayValue` key per companion, paged
+because the Quick Bar has only six keys — is **not needed**.
+
+### `record_busy` is not shown on the panel
+
+Bound as `{DC:…/record_busy/}` in `Textline2` it rendered the literal `false`, because the
+parameter is Binary and nothing maps it to words — giving a key reading `REC / Off /
+false`. It was dropped from the v1 layout (Decision log, 2026-08-24): `var.recBusy` never
+fires on start and pulses for about 76 ms on stop (§9), so there is no interval in which a
+human could read it. What an operator needs is whether recording is running, and
+`record_2track` already shows that as `Off`/`On`.
+
+The parameter stays registered in the core — it is real mixer state and costs nothing to
+serve. It is simply not bound on this panel. `v1project.py` lists it in `NOT_BOUND` so the
+assert reports it as SKIPPED and still fails on any *accidentally* unbound parameter.
+
+### `SKAARHOJ:StepChange` ignores the top edge of a four-way button
+
+Stepping a fader from X2/X3 works on the bottom, left and right edges but **not the top**:
+bottom, right and a plain centre click all step up, left steps down, top does nothing. Each
+press moves the wire value by 0.005 (0.5 % of range). This is the case §9.4 flagged for
+`SKAARHOJ:StepChange4WVert`, which is worth trying if the v1 layout is revisited — an
+up/down pair on the vertical axis is the obvious intent, and the top edge being dead is a
+usability wart rather than a failure.
+
+### Power cut with the panel attached
+
+PDU output 3 switched off for ~28 s with the simulator subscribed throughout, then on.
+
+| Check | Result | Evidence |
+|---|---|---|
+| Reactor indicates the disconnect on the panel | PASS | MTR1 `#8dfd29` → `#ed2828` 5.266 s after the cut, matching the ~5 s read deadline |
+| Recovery is automatic | PASS | MTR1 back to `#8dfd29` 28.915 s after power-on; displays repopulated |
+| Presses while dark reach the core and are rejected there | PASS | X1 pressed three times while dark → exactly three `Failed to set parameter … 'channel_mute' … on device 1` in the core log, timestamped during the outage |
+| Nothing pressed while dark fires on return | PASS | `i.0.mute` still `1` from a fresh connection after recovery; three (odd) toggles could not land back on `1` if any had replayed |
+| Panel returns to its pre-cut rendering | PASS | Final six-key capture pixel-identical to the pre-test capture |
+| PDU ends where it started | PASS | output 3 `State: 1`, 157 mA, 13 W |
+
+An odd press count is deliberate. Four presses would replay to the original value and look
+like success; three cannot.
+
+**The two strong pieces of evidence are the core log and the end state, not the wire
+observer.** The core log shows the presses travelling simulator → Reactor → core and being
+refused at the core — which is the actual claim, and also rules out Reactor having quietly
+swallowed them upstream. The odd-count end state rules out a replay. The observer's "no
+traffic after power-on" line is the weakest of the three and should not be leaned on:
+`m9power.py` guards against the mixer's initial dump by ignoring the first 8 s of its own
+connection, but the core reconnects on its 2 s backoff at roughly the same moment, so a
+write replayed *at reconnect* — precisely when one would occur — could fall inside that
+guard. The observer also gives up after its first connection attempt, so a read timeout
+during the mixer's boot would silently turn it into a no-op.
+
+An earlier run reported channel-1 traffic after power-on, which was a defect in the test
+rather than the core: the observer connected fresh and counted the mixer's **initial state
+dump**, which repeats every path it knows.
+
+Not covered: every press happened after detection (~5 s in). A press inside the detection
+window, while the core still believes the link is up, was not tested.
+
+### Restore proof
+
+Mixer fingerprint `9ce4ce91…`, byte-identical to the pre-test baseline, with **zero**
+differing non-volatile keys — verified from a fresh connection after the run.
+
+Getting there needed one deliberate repair. Stepping snapshots loads snapshot data, and
+reloading the original snapshot reset `i.5.mix` and `i.11.mix`, two channels whose live
+values had been drifted off their snapshot values before the run. Milestone 6.6 hit exactly
+this. Both were written back to their captured live values. **Any run that steps snapshots
+on this mixer must diff the full state afterwards and repair by hand** — reloading the
+original snapshot is not a restore, because it silently discards live drift.
+
+QuickBar: `qb.py restore` reported `RESTORE OK`, three original projects with their original
+display names, `netio` active, `m8v1` deleted, and only `core-netio-powersocket` attached.
+
+**One thing the fingerprint cannot see:** the record test wrote a short 2-track file to the
+mixer's USB stick. Nothing removes it and no state comparison detects it, because it is a
+file rather than a parameter. Every recording test since milestone 6 has left one.
+
+### The core reads its config from the working directory
+
+The core writes and reads `skaarhoj_soundcraft.toml` in the process's **working directory**,
+not in a `skaarhoj_soundcraft-storage/` subdirectory. On first start in an empty directory
+it writes a default config with `Active = false` and a placeholder IP, then sits there
+serving gRPC with no device: the parameter surface answers but every value is empty, and
+the log shows no connection line. Set `Active = true` and the real IP in that file and
+restart. The key names are capitalised (`[[Devices]]`, `Active`, `IP`), unlike the
+lower-case `ibDispatch` tags in `config.go`.
+
+### Mixer state fingerprints need all four SPI counters excluded
+
+`var.spimb` climbs on its own like `var.spioa`, `var.spior` and `var.spiec`, so two
+captures of an untouched mixer used to differ. Only the first three were excluded;
+`fpcap.py` now excludes all four, and two captures 20 s apart match exactly. Any restore
+proof taken before this fix compared a fingerprint that could never repeat — §9.6's
+"differ only in mixer-internal `var.spi*` counters" wording is the same effect, worked
+around by hand at the time.
 
 ## 9.6 Reconnect and multi-device soak results (milestone 7)
 
@@ -1147,3 +1346,20 @@ Format: `DECISION: <date> — <topic> — <decision> — <rationale>`
   exist, all without an error and without a log line; the only symptom is a key that does
   nothing. Nothing in the product catches these, so review by eye cannot be trusted and
   the check has to be mechanical.
+- DECISION: 2026-08-24 — `record_busy` is not shown on the v1 panel — The v1 layout binds
+  `record_2track` alone on its key; `record_busy` stays registered in the core but appears
+  on no display. — It cannot be read by a human: it never fires on start and pulses for
+  about 76 ms on stop (§9). Bound as a braced reference it also rendered the raw string
+  `false`, since the parameter is Binary and nothing maps it to words. What an operator
+  needs is whether recording is running, which `record_2track` already shows. Supersedes
+  the milestone-9 result table's earlier LIMITATION row for this parameter.
+- DECISION: 2026-08-24 — The simulator, not the physical bar, is the authority for display
+  rows — Supersedes the 2026-08-24 entry above that named the physical Quick Bar. Display
+  results are judged on the bitmaps Reactor pushes over the simulator WebSocket. — That
+  earlier decision assumed the simulator renders less than the hardware, on the strength of
+  one blank display in milestone 6.5. It does not: the blank was a dead binding, pointing a
+  `SKAARHOJ:DisplayValue` behavior at a companion parameter and expecting wiring that does
+  not exist. The simulator sends each key's rendered 64x32 display as a PNG, so a binding
+  can be proven to resolve without anyone at the bar. Limit of the evidence: this shows
+  Reactor's rendering, not the physical glass, and no SKAARHOJ documentation states the two
+  are the same bitmap (§9.5).
