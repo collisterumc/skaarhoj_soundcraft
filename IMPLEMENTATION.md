@@ -418,14 +418,17 @@ needs none), **`gorilla/websocket v1.5.3`**, `BurntSushi/toml`, `sirupsen/logrus
   `control.tar.gz` + `data.tar.gz`) laid out exactly like the sample: the arm64 core
   binary at `/usr/bin/<core>` plus the runit service tree under `/service/pkg/<core>`.
 - **Working assumption:** dropping that `.ipks` into the system-manager local-upload page
-  (`POST /api/install-custom-package`) installs and supervises the core. Milestone 7
-  validates this on real hardware. If the local upload rejects a package we built
-  ourselves, we pause and work with SKAARHOJ to identify the supported path for
-  publishing a third-party core.
+  (`POST /api/install-custom-package`) installs and supervises the core. Milestone 10
+  validates this on real hardware.
+- **We cannot build this package from the sample alone.** The 63-byte envelope header
+  holds SKAARHOJ-internal fields, and the maintainer scripts were emitted by a
+  `skaarOS-cli` tool that is not published. Milestone 10 therefore waits on SKAARHOJ
+  support to describe the supported path for a third-party core; synthesizing the header
+  by trial and error is explicitly out of scope.
 
 ## 9. Protocol validation results (milestone 2)
 
-Captured 2026-08-23 against the owner's mixer at `192.168.1.4`: **Ui16**, `model^ui16`,
+Captured 2026-08-23 against the owner's mixer: **Ui16**, `model^ui16`,
 `firmware^1.0.7548-ui16`, `schema^6`. Probe was a throwaway stdlib-only Python RFC6455
 client in `/tmp/probe` (not committed, per Gate G2). Every test captured the affected
 values first and restored them afterwards; restores were verified against a full
@@ -576,7 +579,7 @@ that relayed to the container. **No package was installed on the QuickBar.**
 | Check | Result | Evidence |
 |---|---|---|
 | Attach path exists without an install | PASS | Add Device → Add Manually → "Remote or Unknown" → single Address field (port 8502 implied) → Confirm; backed by `POST /rapi/connectUnknownDevice` |
-| Core attaches and reports Connected | PASS | Home shows `Soundcraft Ui @ <relay>`, device `Ui16-test`, "(configured by remote core)", `Address: 192.168.1.4`, `Device ID: 1`, **Connected** |
+| Core attaches and reports Connected | PASS | Home shows `Soundcraft Ui @ <relay>`, device `Ui16-test`, "(configured by remote core)", `Address: <mixer IP>`, `Device ID: 1`, **Connected** |
 | Reactor takes its parameter catalog from the core | PASS | Device labeled "(configured by remote core)"; bindings resolved our parameter names |
 | Control reaches the real mixer | PASS | Observer WebSocket logged `SETD^i.0.mute^0`, `^1`, `SETD^i.0.mix^0.102`, `^0.097` during the panel-simulator session |
 | Feedback renders in Reactor | PASS | The mute button rendered its active (green) state in the Simulator |
@@ -605,6 +608,33 @@ and imported instead of clicked together in the Configuration UI:
 `Raw` is `DC:<coreName>/<deviceID>/<parameterName>/<dimensionIndex>/`. Behaviors seen:
 `SKAARHOJ:Toggle` (binary), `SKAARHOJ:StepChange` (float), `SKAARHOJ:DisplayValue`
 (text/value display).
+
+## 9.4 Blue Pill operations playbook (milestone 8)
+
+To be filled by milestone 8, before the end-to-end run. Keep it to facts a future
+maintainer needs and can act on; site addresses and credentials stay in the git-ignored
+`reference/site.md`, and the scripted recipes stay in `reference/tools/README.md`.
+
+This section must end up carrying:
+
+- The behavior `ParentID` and `IOReference.Raw` string for **every** v1 parameter. Known
+  so far (§9.3): `SKAARHOJ:Toggle` for a binary, `SKAARHOJ:StepChange` for a float,
+  `SKAARHOJ:DisplayValue` for a text display. Unknown: Oneshot triggers, and how a
+  title-display reference reaches the panel.
+- Whether a dimensioned display companion (`channel_fader_db`, `channel_name`) pairs
+  per-element with the parameter it accompanies. Corelib resolves those references by
+  name only and does not check that both sides share a dimension, so Reactor's behavior
+  here is unverified (Decision log 2026-08-24, channel-name title display).
+- The `.rpj` conf-tree layout, and which files must agree for a key to appear on a panel.
+- What the panel simulator renders versus the physical Quick Bar, so a blank display can
+  be attributed correctly. Milestone 6.5 hit exactly this ambiguity and could not resolve
+  it.
+
+## 9.5 Reactor end-to-end results (milestone 9)
+
+To be filled by milestone 9: one row per v1 parameter, PASS/FAIL/LIMITATION, each with a
+captured evidence excerpt, plus a row for a mixer power-cycle with the panel attached.
+This section supersedes the two unresolved rows in §9.3.
 
 ## 10. Decision log
 
@@ -789,3 +819,24 @@ Format: `DECISION: <date> — <topic> — <decision> — <rationale>`
   plain 0/1. The three-value `MtkState` enum (Stopped/Paused/Playing) applies to the
   *player* key `var.mtk.currentState`, a different path this milestone does not touch.
   Untested on hardware — no Ui24R on hand; flagged for owner review.
+- DECISION: 2026-08-24 — Milestone 7 split into 7/8/9/10 — Separate the work that needs
+  nothing from SKAARHOJ (soak, multi-device, cross-compile, Blue Pill playbook, Reactor
+  end-to-end) from the packaging and on-device install, which now stand alone as milestone
+  10 and are blocked. — The `.ipks` envelope header and the `skaarOS-cli` that generates
+  the maintainer scripts are not public (§8), so a self-built package is guesswork until
+  support explains the supported path. Blocking all of milestone 7 on that would idle work
+  that real hardware can already validate: the milestone-6.5 remote-attach path reaches
+  the mixer from the QuickBar with no package installed, so end-to-end verification does
+  not depend on the install.
+- DECISION: 2026-08-24 — Blue Pill playbook precedes the end-to-end run — Milestone 8
+  exists only to learn how to drive the QuickBar efficiently, and milestone 9 may not
+  start until its gate passes. — Milestone 6.5 reached its result through about an hour of
+  trial and error at the panel, most of it spent rediscovering the HTTP surface and the
+  project-import path. That cost recurs on every later run unless it is written down once.
+  Milestone 8 carries a three-attempt stop rule for the same reason: an unknown recorded
+  is cheaper than an unknown searched for blind.
+- DECISION: 2026-08-24 — Milestone 9 runs interactively, not in a subagent — The Reactor
+  end-to-end run happens in the main session, in small reported steps. — A subagent
+  driving the panel for an hour leaves the owner unable to see progress or intervene, and
+  the 6.5 run ended when that agent died mid-session and its state had to be salvaged by
+  hand. Milestones 7 and 8 are mechanically assertable and stay delegable.

@@ -26,7 +26,7 @@ Full context for each is in [IMPLEMENTATION.md](IMPLEMENTATION.md) § "Open ques
       `/usr/bin/<core>` plus a runit service under `/service/pkg/<core>`. We install it
       through the system-manager local-upload page (`POST /api/install-custom-package`).
       Working assumption: that upload installs and supervises a self-built core.
-      Milestone 7 verifies this on hardware. If it fails, we pause and work with SKAARHOJ
+      Milestone 10 verifies this on hardware. If it fails, we pause and work with SKAARHOJ
       to identify the supported path for publishing a third-party core. Format details in
       IMPLEMENTATION.md §8.
 - [x] **Which Ui models to actually test against:** resolved 2026-07-20 — see Decision
@@ -164,7 +164,7 @@ feedback was proven with a second WebSocket client instead.
       non-existent IP — verified 2026-08-23, 70 s against 192.0.2.55, one transition log
 - [x] Against a real/demo mixer: log shows connection established and ≥ 1 state message
       ingested; connection parameter reports connected=1 — verified 2026-08-23 against
-      the Ui16 at 192.168.1.4, read-only (ALIVE keepalives only)
+      the owner's Ui16, read-only (ALIVE keepalives only)
 
 ---
 
@@ -260,7 +260,7 @@ feedback was proven with a second WebSocket client instead.
       and an external stop 1.29 s after a core press was accepted with no re-fight
       (validates `QuarantineDelayMs` = 0). Ended with `var.isRecording`=0 verified from a
       fresh connection. The "web UI" legs were proxied through a second WebSocket client
-      (milestone-2 precedent); Reactor-in-the-loop behavior remains for milestone 7's
+      (milestone-2 precedent); Reactor-in-the-loop behavior remains for milestone 9's
       end-to-end test
 - [x] Model gating: multitrack parameters absent for Ui12/Ui16 models in gRPC
       ParameterDetail listing — asserted in unit tests via corelib's per-model
@@ -290,7 +290,7 @@ settles it by experiment. Requires the owner and the Blue Pill on the same subne
       — mute and fader driven and confirmed on the wire; button feedback rendered.
       Snapshot/record not exercised. The dB display binding produced no visible text
       in the simulator, and the channel-name title was never observed — both carried
-      to milestone 7's Reactor end-to-end item
+      to milestone 9's Reactor end-to-end item
 - [x] Document the outcome: a working no-install dev flow in README, or a dated
       Decision-log entry that remote attach needs a real Blue Pill host and testing
       goes through `.ipks` installs — results in IMPLEMENTATION.md §9.3, including the
@@ -345,31 +345,160 @@ captured first and restore-verified afterwards (milestone-2 discipline).
 
 ---
 
-## 7. Hardening, packaging & deployment
+## 7. Hardening: reconnect soak, multi-device, cross-compile
 
-- [ ] Reconnect soak test: repeated mixer power-cycles (the SKAARHOJ switches mixer power
-      in normal operation), mixer reboot, and network pull all recover cleanly; state
-      resyncs from the fresh initial dump; stale assumed states cleared; no command
-      replay on reconnect; `connection` parameter tracks every transition
-- [ ] Multi-device: two mixers configured simultaneously, no cross-talk
-- [ ] Cross-compile for Blue Pill: `GOOS=linux GOARCH=arm64 CGO_ENABLED=0`; document build command
-- [ ] Package the core as an `.ipks` (opkg/ipk: arm64 binary at `/usr/bin/<core>` + runit
-      service `/service/pkg/<core>/{run,log/run,down}` + `/var/ibeam/{env,config,log}/<core>`);
-      script the build+package step
-- [ ] Deploy on-device: install the `.ipks` via the system-manager local-upload page
-      (`POST /api/install-custom-package`) and confirm the core runs and appears in Reactor.
-      If a self-built package is not accepted, pause and coordinate with SKAARHOJ on the
-      supported path for a third-party core (see IMPLEMENTATION.md §8)
-- [ ] Reactor end-to-end: parameters bound to a Quick Bar button (mute), fader/encoder
-      (level), and display (snapshot name) behave correctly
-- [ ] Update README with real usage/deployment instructions; move roadmap items to done
+Dev container only — no Blue Pill and no Reactor in the loop. Everything here is
+mechanically assertable, so it can be delegated to `core-builder` and attacked by
+`adversarial-validator`. Run it before pointing a panel at the core (milestones 8–9), so
+that an end-to-end failure cannot be blamed on reconnect or resync behavior.
+
+Mixer power is switched by a network PDU outlet. Its address, credentials, which outlet,
+and the read/write API calls are all in `reference/site.md`. Never switch another outlet.
+
+- [ ] Confirm the PDU accepts writes before planning around it: the NETIO JSON API is
+      read-open but writes need M2M write access enabled. If writes are refused, record
+      that and fall back to asking the owner to switch the outlet by hand
+- [ ] Reconnect soak: ≥ 3 mixer power-cycles via output 3. Assert per cycle — the read
+      deadline detects the loss, `connection` goes 0 then 1, the store and snapshot cache
+      are cleared, no command is replayed at power-on, and the post-resync store matches a
+      fresh independent dump of the mixer
+- [ ] **Close the milestone-2 carry-forward:** record whether a power cut produces a TCP
+      FIN or silent death, and how long detection actually takes, in IMPLEMENTATION.md §9
+- [ ] Network pull without touching power: cut the TCP path abruptly (`wsproxy.py` in
+      `reference/tools/`) and assert the same recovery. Also cover a mixer-initiated
+      reboot if the mixer offers one
+- [ ] Writes issued while disconnected are discarded, not queued — assert no wire traffic
+      at reconnect beyond the normal `ALIVE` / `SHOWLIST` opening
+- [ ] Multi-device: configure the real Ui16 alongside a second simulated mixer
+      (`fakemixer66.py`), ideally as a different model so dimension counts differ. Assert
+      no cross-talk — a write to device 2 never appears on device 1's wire, each device
+      has its own `connection` parameter, and powering one down leaves the other serving
+- [ ] Cross-compile for the Blue Pill: `GOOS=linux GOARCH=arm64 CGO_ENABLED=0`; document
+      the command in the README
 
 **Gate G7 (agent-assertable):**
-- [ ] `go test ./...` green; `go vet` clean; binary builds for host + target arch
-- [ ] Soak log: ≥ 3 forced disconnects with automatic recovery and correct state resync
-      (asserted by comparing post-resync store snapshot to mixer dump)
-- [ ] README contains sections: Installation, Configuration, Parameters table, Deployment —
-      verified by `grep -E "^## (Installation|Configuration|Parameters|Deployment)" README.md`
+- [ ] `go test ./...` green; `go vet` clean; binaries build for the host and for
+      `linux/arm64` (`file` reports an ARM aarch64 ELF)
+- [ ] Soak log: ≥ 3 forced disconnects, each with automatic recovery and a post-resync
+      store fingerprint equal to a fresh direct mixer dump (`fpcap.py`)
+- [ ] IMPLEMENTATION.md §9 states the observed power-off failure mode and detection time,
+      replacing the "power-off behavior still untested" carry-forward
+- [ ] Multi-device trace shows zero device-2 paths on device 1's connection and vice versa
+- [ ] PDU output 3 reads `State: 1` at the end of the run
+
+---
+
+## 8. Blue Pill operations playbook (legwork before end-to-end)
+
+Milestone 6.5 got a result but took about an hour of trial and error at the panel. This
+milestone pays that cost down **before** the end-to-end run, so milestone 9 is a sequence
+of known moves rather than a search. Nothing here touches the mixer.
+
+Back up first: export every project on the QuickBar into `reference/backups/<date>/`
+before making any change (rule in `reference/site.md`).
+
+- [ ] Map the surface we actually drive: login/EULA, project list, export, import,
+      activate, add/remove remote device, logs, packages page. One line per call — method,
+      path, what it returns, whether it needs the session cookie
+- [ ] Author the full v1 binding project as JSON and import it, rather than clicking it
+      together: a `.rpj` is a gzipped tar of a `conf/` tree and carries `HWCBehaviors`.
+      Cover **every** v1 parameter — mute button, channel fader, master fader, record
+      toggle, snapshot up/down triggers, snapshot-name display, dB display, channel-name
+      title
+- [ ] Find the behavior (`ParentID`) that each parameter type needs. Milestone 6.5 knows
+      `SKAARHOJ:Toggle`, `SKAARHOJ:StepChange`, `SKAARHOJ:DisplayValue`; triggers and
+      title displays are unknown. Get the list from Reactor rather than guessing
+- [ ] One command to reset the QuickBar to its pre-test baseline (import the backup,
+      re-activate the original project). Prove it works before milestone 9 needs it
+- [ ] Write down what the panel simulator renders and what it does not — milestone 6.5
+      saw a `DisplayValue` binding stay blank there. Decide whether the simulator or the
+      physical Quick Bar is the authority for milestone 9's display rows
+- [ ] Where to read failures: which log surface shows a rejected binding or a failed
+      attach, and how to correlate timestamps (the device clock runs behind UTC)
+- [ ] **Stop rule.** If any step above is not settled in three attempts, stop and write
+      down what is unknown and what was tried. Do not iterate blind — that is the failure
+      mode this milestone exists to prevent
+- [ ] Record site-specific recipes in `reference/tools/README.md` (git-ignored) and
+      protocol-level facts in IMPLEMENTATION.md §9.4
+
+**Gate G8 (agent-assertable):**
+- [ ] One scripted command imports the v1 binding project; a text dump of the
+      configuration asserts every v1 parameter appears bound
+- [ ] One scripted command restores the baseline; asserted by comparing the project list
+      and active project against the backup taken at the start
+- [ ] IMPLEMENTATION.md §9.4 gives, for every v1 parameter, the behavior `ParentID` and
+      the `Raw` reference string used to bind it — or names the ones still unknown
+- [ ] `reference/backups/<date>/` holds a pre-change export of every project on the device
+- [ ] `git status --porcelain` shows only documentation changes
+
+---
+
+## 9. Reactor end-to-end on the QuickBar
+
+Runs the core in the dev container and reaches it from the QuickBar over the milestone-6.5
+remote-attach path, so no package install is needed and this milestone is **not** blocked
+on SKAARHOJ.
+
+**Run this interactively in the main session — do not delegate it to a subagent.** The
+owner follows along and can intervene; a long opaque subagent run is what made 6.5
+painful. Work in small steps and report after each.
+
+- [ ] Attach the dev-container core through the relay; confirm Reactor reports Connected
+      and takes its parameter catalog from the core
+- [ ] Import the milestone-8 binding project; confirm every binding resolves
+- [ ] Drive each v1 parameter from the panel and confirm the effect on the mixer through
+      an observer WebSocket: `channel_mute`, `channel_fader`, `master_fader`,
+      `record_2track`, `snapshot_up` / `snapshot_down`
+- [ ] Confirm feedback in the other direction: change each value from a second WebSocket
+      client and see the panel follow (button LED, fader position, displays)
+- [ ] **Resolve the two 6.5 unknowns:** whether `channel_fader_db` renders on a display
+      binding, and whether `RecommendedParamForTitleDisplay` puts the channel name on the
+      panel
+- [ ] Power-cycle the mixer with the panel attached (PDU output 3): Reactor indicates the
+      disconnect and blocks output, recovery is automatic, and nothing pressed while the
+      mixer was off fires when it returns
+- [ ] Restore: mixer values byte-identical to baseline from a fresh connection, QuickBar
+      back to its baseline project set
+- [ ] README: Installation (build from source), Configuration, and Parameters sections
+- [ ] Record results in IMPLEMENTATION.md § "Reactor end-to-end results"
+
+**Gate G9 (agent-assertable):**
+- [ ] The results table has one row per v1 parameter with PASS/FAIL/LIMITATION and a
+      captured evidence excerpt; no FAIL row lacks a linked Decision-log entry
+- [ ] The dB-display row and the channel-title row are each resolved — neither is left
+      "NOT SHOWN" or "UNTESTED"
+- [ ] A power-cycle-with-panel-attached row is present and records what Reactor showed
+- [ ] Restore proof recorded for both the mixer and the QuickBar
+- [ ] `grep -E "^## (Installation|Configuration|Parameters)" README.md` finds all three
+
+---
+
+## 10. Packaging & on-device deployment ⛔ blocked on SKAARHOJ support
+
+**Blocked.** IMPLEMENTATION.md §8 documents the `.ipks` container as observed in one
+sample package, including a 63-byte header whose fields are SKAARHOJ-internal, and the
+maintainer scripts are stamped by a `skaarOS-cli` tool that is not public. Building an
+installable package from that alone would be guesswork. We are waiting on SKAARHOJ support
+to describe the supported path. Do not start this milestone by trying to synthesize the
+header.
+
+Milestones 7–9 deliberately avoid needing this: the core is exercised on real hardware
+through the remote-attach path instead.
+
+- [ ] Get from SKAARHOJ: how a third party builds and (if required) signs an `.ipks`, and
+      whether `skaarOS-cli` or an equivalent is available to us
+- [ ] Script the build + package step once the format is confirmed
+- [ ] Install through the system-manager local-upload page and confirm runit supervises
+      the core and Reactor lists it as a local core
+- [ ] Re-run the milestone-9 parameter checks against the installed core, to show the
+      remote-attach results carry over
+- [ ] README: Deployment section
+
+**Gate G10 (agent-assertable):**
+- [ ] A build script produces an `.ipks` and the package installs without manual steps
+- [ ] The installed core survives a device reboot and reappears in Reactor
+- [ ] Milestone-9 results reproduce against the installed core
+- [ ] `grep -E "^## Deployment" README.md` succeeds
 
 ---
 
@@ -389,6 +518,10 @@ graph LR
     G4 --> G66[6.6 TestTube integration]
     G5 --> G66
     G6 --> G66
-    G65 --> G7[7 Hardening/deploy]
+    G65 --> G7[7 Soak + multi-device]
     G66 --> G7
+    G7 --> G8[8 Blue Pill playbook]
+    G8 --> G9[9 Reactor end-to-end]
+    G9 --> G10[10 Packaging/deploy]
+    SUP([SKAARHOJ support:<br/>.ipks format]) -.blocks.-> G10
 ```

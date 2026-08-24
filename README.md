@@ -4,7 +4,11 @@ A SKAARHOJ **device core** that speaks the Soundcraft Ui-series WebSocket protoc
 SKAARHOJ Blue Pill controllers (Quick Bar, Air Fly Pro, custom panels, etc.) to control a
 Soundcraft Ui12 / Ui16 / Ui24R digital mixer with full bidirectional feedback.
 
-> **Status:** Documentation / planning phase. No core code has been written yet.
+> **Status:** The core is written and every v1 control has been verified against a real
+> Ui16, both directly and through Reactor on a Blue Pill. What remains is hardening and
+> packaging: the `.ipks` build and on-device install are blocked pending SKAARHOJ guidance
+> on how a third party builds a package (see [TODO.md](TODO.md) milestone 10). Until then
+> the core runs on any host Reactor can reach.
 > See [TODO.md](TODO.md) for the roadmap and [IMPLEMENTATION.md](IMPLEMENTATION.md) for design details.
 
 ## What this core will do

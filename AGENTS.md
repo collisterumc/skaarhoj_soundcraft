@@ -73,6 +73,11 @@ scoped deliberately, so don't ask one to do another's job.
 Give each one a bounded task. Run `adversarial-validator` even when the work looks
 correct; it exists for exactly that case.
 
+**Some work is not delegable.** A milestone that says so in TODO.md runs in the main
+session, in small reported steps. Long interactive sessions against the owner's physical
+hardware are the case that matters: the owner needs to see progress and be able to step
+in, and a subagent that dies mid-run leaves the equipment in an unknown state.
+
 Keep project facts in the documents, not in the agent definitions. The agents are told
 which sections to read and are expected to re-read them each run, so a fact recorded once
 in IMPLEMENTATION.md reaches all three and cannot drift out of sync.
