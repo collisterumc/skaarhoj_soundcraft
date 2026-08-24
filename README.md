@@ -68,3 +68,5 @@ container. The snapshot this project was researched against (captured **2026-07-
 | `ibeam-corelib-go/` | [SKAARHOJ/ibeam-corelib-go](https://github.com/SKAARHOJ/ibeam-corelib-go) — IBeam server/parameter framework | commit `a0219ce` |
 | `ibeam-lib-config/` | [SKAARHOJ/ibeam-lib-config](https://github.com/SKAARHOJ/ibeam-lib-config) — config schema library | commit `85f0ad1` |
 | `manuals/*.pdf` | [SKAARHOJ/Support](https://github.com/SKAARHOJ/Support) `Manuals/` (master) — Reactor + Blue Pill + SKAARHOJ manuals | fetched from `master`; verify via checksums below |
+| `site.md` | Provided by the project owner — endpoints and credentials for the owner's test installation | obtain from the owner; its contents are never committed or quoted in public docs |
+| `backups/` | Configuration backups of the owner's SKAARHOJ controller, taken before changes | created on demand; never committed |
