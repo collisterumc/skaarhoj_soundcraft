@@ -39,6 +39,7 @@ func wireTestDevice(t *testing.T) *device {
 			channelMute:      r.PID("channel_mute"),
 			channelFader:     r.PID("channel_fader"),
 			channelFaderDB:   r.PID("channel_fader_db"),
+			channelName:      r.PID("channel_name"),
 			masterFader:      r.PID("master_fader"),
 			masterFaderDB:    r.PID("master_fader_db"),
 			snapshotUp:       r.PID("snapshot_up"),
@@ -130,7 +131,7 @@ func TestInboundMapping(t *testing.T) {
 		{"m.mix", "0.7", d.pids.masterFader, nil, func(v *pb.ParameterValue) bool { return v.GetFloating() == 70 }},
 	}
 	for _, c := range cases {
-		ps := d.inboundParameter(c.path, c.value)
+		ps := d.inboundParameter(message{kind: "SETD", path: c.path, value: c.value})
 		p := paramByPID(ps, c.wantPID)
 		if p == nil {
 			t.Errorf("%s^%s: no parameter for PID %d produced", c.path, c.value, c.wantPID)
@@ -177,7 +178,7 @@ func TestInboundFaderDBCompanion(t *testing.T) {
 		{"l.0.mix", "0", d.pids.channelFader, d.pids.channelFaderDB, []uint32{13}, 0, "-inf dB"},
 	}
 	for _, c := range cases {
-		ps := d.inboundParameter(c.path, c.value)
+		ps := d.inboundParameter(message{kind: "SETD", path: c.path, value: c.value})
 		if len(ps) != 2 {
 			t.Fatalf("%s^%s: want 2 parameters (fader+db), got %d", c.path, c.value, len(ps))
 		}
@@ -198,6 +199,76 @@ func TestInboundFaderDBCompanion(t *testing.T) {
 	}
 }
 
+// TestInboundChannelName checks channel-name SETS mapping: input and line-in
+// names reach channel_name with the right dimension, out-of-range and malformed
+// indices are ignored, an empty name passes through, and a name containing '^'
+// survives intact (the parse layer keeps the value remainder whole).
+func TestInboundChannelName(t *testing.T) {
+	d := wireTestDevice(t)
+
+	cases := []struct {
+		name, path, value string
+		wantDim           []uint32
+		wantStr           string
+	}{
+		{"input 1", "i.0.name", "Vocals", []uint32{1}, "Vocals"},
+		{"input 12", "i.11.name", "Kick", []uint32{12}, "Kick"},
+		{"line 2", "l.1.name", "Playback", []uint32{14}, "Playback"},
+		{"empty name is legitimate", "i.2.name", "", []uint32{3}, ""},
+		{"name with caret survives", "i.4.name", "Gtr^L", []uint32{5}, "Gtr^L"},
+	}
+	for _, c := range cases {
+		ps := d.inboundParameter(message{kind: "SETS", path: c.path, value: c.value})
+		p := paramByPID(ps, d.pids.channelName)
+		if p == nil {
+			t.Errorf("%s (%s^%s): no channel_name parameter produced", c.name, c.path, c.value)
+			continue
+		}
+		if len(p.Value) != 1 {
+			t.Fatalf("%s: want 1 value, got %d", c.name, len(p.Value))
+		}
+		if !dimEqual(p.Value[0].DimensionID, c.wantDim) {
+			t.Errorf("%s: dimension %v, want %v", c.name, p.Value[0].DimensionID, c.wantDim)
+		}
+		if got := p.Value[0].GetStr(); got != c.wantStr {
+			t.Errorf("%s: name = %q, want %q", c.name, got, c.wantStr)
+		}
+	}
+
+	// Out-of-range and malformed indices produce nothing.
+	for _, path := range []string{
+		"i.12.name", // beyond 12 inputs
+		"l.2.name",  // beyond 2 line-in channels
+		"s.0.name",  // out-of-scope channel type
+		"i.x.name",  // non-numeric index
+		"i.-1.name", // negative index
+	} {
+		if ps := d.inboundParameter(message{kind: "SETS", path: path, value: "X"}); len(ps) != 0 {
+			t.Errorf("%s: expected no parameter, got %d", path, len(ps))
+		}
+	}
+}
+
+// TestInboundNameKindGuard proves the SETD/SETS type guard: a numeric SETD on a
+// .name path produces no channel_name parameter, and a string SETS on a numeric
+// mute/mix path produces nothing. The wrong wire type is dropped, not coerced.
+func TestInboundNameKindGuard(t *testing.T) {
+	d := wireTestDevice(t)
+
+	if ps := d.inboundParameter(message{kind: "SETD", path: "i.0.name", value: "1"}); len(ps) != 0 {
+		t.Errorf("SETD on .name must not produce a parameter, got %d", len(ps))
+	}
+	if ps := d.inboundParameter(message{kind: "SETS", path: "i.0.mute", value: "Vocals"}); len(ps) != 0 {
+		t.Errorf("SETS on .mute must not produce a parameter, got %d", len(ps))
+	}
+	if ps := d.inboundParameter(message{kind: "SETS", path: "i.0.mix", value: "Vocals"}); len(ps) != 0 {
+		t.Errorf("SETS on .mix must not produce a parameter, got %d", len(ps))
+	}
+	if ps := d.inboundParameter(message{kind: "SETS", path: "m.mix", value: "Vocals"}); len(ps) != 0 {
+		t.Errorf("SETS on m.mix must not produce a parameter, got %d", len(ps))
+	}
+}
+
 // TestInboundIgnoresUnmapped confirms out-of-range and unrelated paths produce
 // no toManager parameter (they still land in the store elsewhere).
 func TestInboundIgnoresUnmapped(t *testing.T) {
@@ -210,13 +281,13 @@ func TestInboundIgnoresUnmapped(t *testing.T) {
 		"s.0.mix",         // out-of-scope channel type
 		"m.dim",           // no parameter
 	} {
-		if ps := d.inboundParameter(path, "1"); len(ps) != 0 {
+		if ps := d.inboundParameter(message{kind: "SETD", path: path, value: "1"}); len(ps) != 0 {
 			t.Errorf("%s: expected no parameter, got %d", path, len(ps))
 		}
 	}
 	// Non-numeric and non-finite values are rejected (the mixer ignores them too).
 	for _, v := range []string{"", "abc", "NaN", "Inf"} {
-		if ps := d.inboundParameter("i.0.mix", v); len(ps) != 0 {
+		if ps := d.inboundParameter(message{kind: "SETD", path: "i.0.mix", value: v}); len(ps) != 0 {
 			t.Errorf("mix value %q should be rejected", v)
 		}
 	}
@@ -294,20 +365,20 @@ func TestRecordInboundMapping(t *testing.T) {
 	d := wireTestDevice(t)
 
 	cases := []struct {
-		path, value string
-		wantPID     uint32
-		checkBool   *bool
-		checkStr    string
+		kind, path, value string
+		wantPID           uint32
+		checkBool         *bool
+		checkStr          string
 	}{
-		{"var.isRecording", "1", d.pids.record2track, boolp(true), ""},
-		{"var.isRecording", "0", d.pids.record2track, boolp(false), ""},
-		{"var.recBusy", "1", d.pids.recordBusy, boolp(true), ""},
-		{"var.mtk.rec.currentState", "1", d.pids.recordMultitrack, boolp(true), ""},
-		{"var.mtk.rec.busy", "1", d.pids.multitrackBusy, boolp(true), ""},
-		{"var.mtk.rec.time", "00:23", d.pids.multitrackTime, nil, "00:23"},
+		{"SETD", "var.isRecording", "1", d.pids.record2track, boolp(true), ""},
+		{"SETD", "var.isRecording", "0", d.pids.record2track, boolp(false), ""},
+		{"SETD", "var.recBusy", "1", d.pids.recordBusy, boolp(true), ""},
+		{"SETD", "var.mtk.rec.currentState", "1", d.pids.recordMultitrack, boolp(true), ""},
+		{"SETD", "var.mtk.rec.busy", "1", d.pids.multitrackBusy, boolp(true), ""},
+		{"SETS", "var.mtk.rec.time", "00:23", d.pids.multitrackTime, nil, "00:23"},
 	}
 	for _, c := range cases {
-		p := paramByPID(d.inboundParameter(c.path, c.value), c.wantPID)
+		p := paramByPID(d.inboundParameter(message{kind: c.kind, path: c.path, value: c.value}), c.wantPID)
 		if p == nil {
 			t.Errorf("%s^%s: no parameter for PID %d produced", c.path, c.value, c.wantPID)
 			continue
@@ -396,6 +467,36 @@ func TestMultitrackModelGating(t *testing.T) {
 			if _, err := r.GetParameterDetail(pid, modelID); err != nil {
 				t.Errorf("%s missing for model %d: %v", name, modelID, err)
 			}
+		}
+	}
+}
+
+// TestChannelNameRegistration asserts channel_name registers for every model
+// with the model's channel dimension (inputs + line). testRegistry running
+// without a fatal already proves the RecommendedParamForTitleDisplay references
+// resolve; corelib validation fatals on an unresolvable reference.
+func TestChannelNameRegistration(t *testing.T) {
+	r := testRegistry(t)
+
+	pid := r.PID("channel_name")
+	if pid == 0 {
+		t.Fatal("channel_name not registered for any model")
+	}
+
+	// model ID → expected dimension count (inputs + line).
+	want := map[uint32]uint32{1: 8 + 2, 2: 12 + 2, 3: 24 + 2}
+	for modelID, wantCount := range want {
+		detail, err := r.GetParameterDetail(pid, modelID)
+		if err != nil {
+			t.Errorf("channel_name missing for model %d: %v", modelID, err)
+			continue
+		}
+		if len(detail.Dimensions) != 1 {
+			t.Errorf("model %d: channel_name has %d dimensions, want 1", modelID, len(detail.Dimensions))
+			continue
+		}
+		if got := detail.Dimensions[0].Count; got != wantCount {
+			t.Errorf("model %d: channel_name dimension count = %d, want %d", modelID, got, wantCount)
 		}
 	}
 }

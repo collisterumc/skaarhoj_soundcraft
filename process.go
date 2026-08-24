@@ -94,6 +94,7 @@ func buildDevices(r *ib.IBeamParameterRegistry, config CoreConfig, toManager cha
 				channelMute:      r.PID("channel_mute"),
 				channelFader:     r.PID("channel_fader"),
 				channelFaderDB:   r.PID("channel_fader_db"),
+				channelName:      r.PID("channel_name"),
 				masterFader:      r.PID("master_fader"),
 				masterFaderDB:    r.PID("master_fader_db"),
 				snapshotUp:       r.PID("snapshot_up"),
@@ -122,6 +123,7 @@ type mixerPIDs struct {
 	channelMute     uint32
 	channelFader    uint32
 	channelFaderDB  uint32
+	channelName     uint32
 	masterFader     uint32
 	masterFaderDB   uint32
 	snapshotUp      uint32
@@ -336,7 +338,7 @@ func (d *device) ingest(line string) bool {
 		d.store.set(msg.path, msg.value)
 		// Map recognized paths to current values. Inbound traffic never triggers
 		// a wire send — only fromManager writes go out.
-		for _, p := range d.inboundParameter(msg.path, msg.value) {
+		for _, p := range d.inboundParameter(msg) {
 			d.toManager <- p
 		}
 		return true

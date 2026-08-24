@@ -191,6 +191,7 @@ func withRealWireMapping(t *testing.T) func(*device) {
 			channelMute:     r.PID("channel_mute"),
 			channelFader:    r.PID("channel_fader"),
 			channelFaderDB:  r.PID("channel_fader_db"),
+			channelName:     r.PID("channel_name"),
 			masterFader:     r.PID("master_fader"),
 			masterFaderDB:   r.PID("master_fader_db"),
 			snapshotUp:      r.PID("snapshot_up"),
@@ -367,6 +368,32 @@ func TestInboundForwardsToManager(t *testing.T) {
 	}
 
 	// Inbound traffic must not produce any outbound SETD.
+	if got := countSETD(conn.written(), "SETD^"); got != 0 {
+		t.Errorf("inbound produced %d outbound SETD frames, want 0", got)
+	}
+}
+
+// TestInboundChannelNameForwardsToManager pushes a name SETS through the live
+// session and asserts it reaches toManager as the channel_name parameter with
+// the right dimension and value, and that inbound traffic sends nothing.
+func TestInboundChannelNameForwardsToManager(t *testing.T) {
+	dialer := newMockDialer()
+	dev, _, toManager := newTestDevice(t, dialer.dial, withRealWireMapping(t))
+
+	conn := newMockConn()
+	dialer.queueConn(conn)
+	awaitConnection(t, toManager, true)
+
+	conn.frames <- "3:::SETS^i.0.name^Vocals"
+
+	p := awaitParameter(t, toManager, dev.pids.channelName)
+	if len(p.Value) != 1 || !dimEqual(p.Value[0].DimensionID, []uint32{1}) {
+		t.Fatalf("channel_name dimension = %v, want [1]", p.Value[0].DimensionID)
+	}
+	if got := p.Value[0].GetStr(); got != "Vocals" {
+		t.Errorf("channel_name = %q, want Vocals", got)
+	}
+
 	if got := countSETD(conn.written(), "SETD^"); got != 0 {
 		t.Errorf("inbound produced %d outbound SETD frames, want 0", got)
 	}

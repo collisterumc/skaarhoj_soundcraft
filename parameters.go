@@ -83,12 +83,34 @@ func configureParameters(r *ib.IBeamParameterRegistry) {
 		DefaultValue:  b.Bool(false),
 	}, ib.WithDefaultValid())
 
-	// channel_mute and channel_fader share a per-model channel dimension sized
-	// inputs + line-in (G0 decision). RegisterParameterForModels registers one
-	// detail per model, so each model gets its own dimension size under the same
-	// parameter name — PID("channel_mute") resolves the same on all models.
+	// channel_mute, channel_fader, and channel_name share a per-model channel
+	// dimension sized inputs + line-in (G0 decision). RegisterParameterForModels
+	// registers one detail per model, so each model gets its own dimension size
+	// under the same parameter name — PID("channel_mute") resolves the same on all
+	// models.
 	for _, m := range models {
 		dim := channelDimension(m)
+
+		// channel_name carries the mixer's per-channel names, fed from
+		// SETS^{i|l}.<n>.name. The channel controls point their title display at it
+		// so each strip shows its mixer name; static element labels cannot update at
+		// runtime and are shared across devices, so the live names live here instead.
+		// It must exist in the registry: corelib fatals at RegisterDevice on an
+		// unresolvable title-display reference. Registered first for readability, not
+		// because order matters to that check.
+		r.RegisterParameterForModels([]uint32{m.id}, &pb.ParameterDetail{
+			Path:          "mix",
+			Name:          "channel_name",
+			Label:         "Channel Name",
+			ShortLabel:    "Name",
+			Description:   "Channel name reported by the mixer for input and line-in channels",
+			ControlStyle:  pb.ControlStyle_NoControl,
+			FeedbackStyle: pb.FeedbackStyle_NormalFeedback,
+			ValueType:     pb.ValueType_String,
+			DefaultValue:  b.String(""),
+			Dimensions:    []*pb.DimensionDetail{dim},
+		}, ib.WithDefaultValid())
+
 		r.RegisterParameterForModels([]uint32{m.id}, &pb.ParameterDetail{
 			Path:          "mix",
 			Name:          "channel_mute",
@@ -101,26 +123,28 @@ func configureParameters(r *ib.IBeamParameterRegistry) {
 			DefaultValue:  b.Bool(false),
 			// Optimistic confirm handles the missing echo; retry guards a lost
 			// write, which the mixer never validates or acknowledges.
-			RetryCount:     2,
-			ControlDelayMs: 50,
-			Dimensions:     []*pb.DimensionDetail{dim},
+			RetryCount:                      2,
+			ControlDelayMs:                  50,
+			RecommendedParamForTitleDisplay: "channel_name",
+			Dimensions:                      []*pb.DimensionDetail{dim},
 		})
 
 		// channel_fader_db is the read-only dB companion to channel_fader: the
 		// display shows dB while the tick moves on the linear 0–100 scale. It shares
 		// channel_fader's per-model channel dimension so each channel pairs with its
-		// own reading. Registered before channel_fader references it.
+		// own reading.
 		r.RegisterParameterForModels([]uint32{m.id}, &pb.ParameterDetail{
-			Path:          "mix",
-			Name:          "channel_fader_db",
-			Label:         "Channel Fader (dB)",
-			ShortLabel:    "Fader dB",
-			Description:   "Channel master-mix fader reading in dB (read-only display of channel_fader)",
-			ControlStyle:  pb.ControlStyle_NoControl,
-			FeedbackStyle: pb.FeedbackStyle_NormalFeedback,
-			ValueType:     pb.ValueType_String,
-			DefaultValue:  b.String(""),
-			Dimensions:    []*pb.DimensionDetail{dim},
+			Path:                            "mix",
+			Name:                            "channel_fader_db",
+			Label:                           "Channel Fader (dB)",
+			ShortLabel:                      "Fader dB",
+			Description:                     "Channel master-mix fader reading in dB (read-only display of channel_fader)",
+			ControlStyle:                    pb.ControlStyle_NoControl,
+			FeedbackStyle:                   pb.FeedbackStyle_NormalFeedback,
+			ValueType:                       pb.ValueType_String,
+			DefaultValue:                    b.String(""),
+			RecommendedParamForTitleDisplay: "channel_name",
+			Dimensions:                      []*pb.DimensionDetail{dim},
 		}, ib.WithDefaultValid())
 
 		r.RegisterParameterForModels([]uint32{m.id}, &pb.ParameterDetail{
@@ -140,11 +164,12 @@ func configureParameters(r *ib.IBeamParameterRegistry) {
 			FineSteps:           0.5,
 			CoarseSteps:         5,
 			// One decimal because the tick moves on the linear 0–100 scale.
-			DisplayFloatPrecision:          pb.FloatPrecision_OneDecimal,
-			RecommendedParamForTextDisplay: "channel_fader_db",
-			RetryCount:                     2,
-			ControlDelayMs:                 50,
-			Dimensions:                     []*pb.DimensionDetail{dim},
+			DisplayFloatPrecision:           pb.FloatPrecision_OneDecimal,
+			RecommendedParamForTextDisplay:  "channel_fader_db",
+			RecommendedParamForTitleDisplay: "channel_name",
+			RetryCount:                      2,
+			ControlDelayMs:                  50,
+			Dimensions:                      []*pb.DimensionDetail{dim},
 		})
 	}
 

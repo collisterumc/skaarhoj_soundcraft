@@ -157,12 +157,19 @@ func (d *device) faderConfirm(param *pb.Parameter, faderPID, dbPID uint32) []*pb
 	}
 }
 
-// inboundParameter maps a recognized SETD path to toManager current values.
-// It handles m.mix and {i|l}.<n>.{mute|mix}; a fader path also produces its dB
-// display companion. Every other path returns nil so the store keeps it but
-// nothing forwards it.
-func (d *device) inboundParameter(path, value string) []*pb.Parameter {
+// inboundParameter maps a recognized inbound path to toManager current values.
+// kind is the wire message kind ("SETD" numeric, "SETS" string): a numeric
+// property (mute/mix) accepts only SETD, a string property (name) only SETS, so
+// a wrong-typed message never produces a mismatched parameter. It handles m.mix
+// and {i|l}.<n>.{mute|mix|name}; a fader path also produces its dB display
+// companion. Every other path returns nil so the store keeps it but nothing
+// forwards it.
+func (d *device) inboundParameter(msg message) []*pb.Parameter {
+	kind, path, value := msg.kind, msg.path, msg.value
 	if path == "m.mix" {
+		if kind != "SETD" {
+			return nil
+		}
 		f, ok := parseFloat(value)
 		if !ok {
 			return nil
@@ -173,10 +180,13 @@ func (d *device) inboundParameter(path, value string) []*pb.Parameter {
 	// the operator steps snapshots, not shows. var.currentSnapshot covers both
 	// the initial dump and mixer-side loads (both arrive as this SETS).
 	if path == "var.currentSnapshot" {
+		if kind != "SETS" {
+			return nil
+		}
 		return []*pb.Parameter{b.Param(d.pids.currentSnapshot, d.id, b.String(value))}
 	}
 
-	if p := d.recordInbound(path, value); p != nil {
+	if p := d.recordInbound(msg); p != nil {
 		return []*pb.Parameter{p}
 	}
 
@@ -199,17 +209,30 @@ func (d *device) inboundParameter(path, value string) []*pb.Parameter {
 
 	switch prop {
 	case "mute":
+		if kind != "SETD" {
+			return nil
+		}
 		on, ok := parseBool(value)
 		if !ok {
 			return nil
 		}
 		return []*pb.Parameter{b.Param(d.pids.channelMute, d.id, b.Bool(on, dim))}
 	case "mix":
+		if kind != "SETD" {
+			return nil
+		}
 		f, ok := parseFloat(value)
 		if !ok {
 			return nil
 		}
 		return d.faderInbound(f, d.pids.channelFader, d.pids.channelFaderDB, dim)
+	case "name":
+		// Names arrive as SETS in the initial dump and on rename. Empty is a
+		// legitimate name and passes through as an empty string.
+		if kind != "SETS" {
+			return nil
+		}
+		return []*pb.Parameter{b.Param(d.pids.channelName, d.id, b.String(value, dim))}
 	}
 	return nil
 }
@@ -229,10 +252,15 @@ func (d *device) faderInbound(wire float64, faderPID, dbPID uint32, dim ...uint3
 // feeds var.isRecording / var.mtk.rec.currentState to the matching in-flight
 // guard, so a command clears its guard early once the mixer confirms the new
 // state (see recordGuard). The mtk keys only map when their parameters are
-// registered (Ui24R), so a stray mtk push on another model is ignored.
-func (d *device) recordInbound(path, value string) *pb.Parameter {
+// registered (Ui24R), so a stray mtk push on another model is ignored. The
+// numeric keys accept only SETD; the string time key only SETS.
+func (d *device) recordInbound(msg message) *pb.Parameter {
+	kind, path, value := msg.kind, msg.path, msg.value
 	switch path {
 	case "var.isRecording":
+		if kind != "SETD" {
+			return nil
+		}
 		on, ok := parseBool(value)
 		if !ok {
 			return nil
@@ -242,12 +270,18 @@ func (d *device) recordInbound(path, value string) *pb.Parameter {
 		}
 		return b.Param(d.pids.record2track, d.id, b.Bool(on))
 	case "var.recBusy":
+		if kind != "SETD" {
+			return nil
+		}
 		on, ok := parseBool(value)
 		if !ok {
 			return nil
 		}
 		return b.Param(d.pids.recordBusy, d.id, b.Bool(on))
 	case "var.mtk.rec.currentState":
+		if kind != "SETD" {
+			return nil
+		}
 		on, ok := parseBool(value)
 		if !ok || d.pids.recordMultitrack == 0 {
 			return nil
@@ -257,13 +291,16 @@ func (d *device) recordInbound(path, value string) *pb.Parameter {
 		}
 		return b.Param(d.pids.recordMultitrack, d.id, b.Bool(on))
 	case "var.mtk.rec.busy":
+		if kind != "SETD" {
+			return nil
+		}
 		on, ok := parseBool(value)
 		if !ok || d.pids.multitrackBusy == 0 {
 			return nil
 		}
 		return b.Param(d.pids.multitrackBusy, d.id, b.Bool(on))
 	case "var.mtk.rec.time":
-		if d.pids.multitrackTime == 0 {
+		if kind != "SETS" || d.pids.multitrackTime == 0 {
 			return nil
 		}
 		return b.Param(d.pids.multitrackTime, d.id, b.String(value))

@@ -200,8 +200,9 @@ Consequences:
     (The framework does offer dynamic Opt lists, via `optionListIsDynamic` and
     `optionListUpdate`. v1 does not use them, per the snapshot-UX decision.)
 - Dimensions: register mute/fader once with a channel dimension sized per model, using
-  `elementLabels` for default channel names. Consider live label updates from
-  `i.<n>.name` (verify corelib support for dynamic element labels — TBD).
+  `elementLabels` for default channel names. `elementLabels` cannot update at runtime and
+  are model-scoped, so live channel names ship as the `channel_name` parameter instead
+  (Decision log 2026-08-24, open question 7).
 - `ModelInfo.DeviceWebUILink` supports `http://{ip}/` for an "Open UI" button in Reactor.
 
 ---
@@ -224,7 +225,7 @@ Consequences:
 | 10 | `record_multitrack` (Ui24R) | as #8 | — | `MTK_REC_TOGGLE` sent when target ≠ `var.mtk.rec.currentState` |
 | 10a | `multitrack_busy` (Ui24R) | Binary, NoControl | — | `var.mtk.rec.busy` |
 | 10b | `multitrack_time` (Ui24R) | String, NoControl | — | `var.mtk.rec.time` |
-| 11 | `channel_name` | String, NoControl | channel | `{i\|l}.<n>.name` |
+| 11 | `channel_name` | String, NoControl, feedback | channel (same as `channel_mute`) | `{i\|l}.<n>.name` (SETS only); `channel_mute`/`channel_fader`/`channel_fader_db` point their `RecommendedParamForTitleDisplay` at it |
 
 Channel dimension flattening: single 1-based dimension ordered `inputs, line` with labels
 like `IN 1…`, `LINE 1…`; per-model sizes from §2.6. Player/FX/sub/aux/VCA masters and
@@ -336,9 +337,12 @@ reappearing is **routine**, not an error condition:
    single toggle with state feedback; race window accepted.
 6. **Snapshot selection UX** — RESOLVED, see Decision log entry 2026-07-20: up/down
    stepping within the current show + current-snapshot-name display.
-7. **Dynamic element labels** — can channel `elementLabels` update at runtime from
-   `i.<n>.name`? Needs corelib verification; fallback = static labels + `channel_name`
-   parameter for displays.
+7. **Dynamic element labels** — RESOLVED 2026-08-24, see the Decision log entry "Channel
+   names as a parameter". Channel `elementLabels` cannot update at runtime and are
+   model-scoped (shared across devices), so mixer channel names cannot ride on them. The
+   names ship as the `channel_name` parameter (catalog row 11), and each channel control
+   pairs with it via `RecommendedParamForTitleDisplay` (corelib fatals at `RegisterDevice`
+   on an unresolvable reference). Static element labels stay as they are.
 8. **Fader parameter unit** — RESOLVED 2026-08-23, see the Decision log entry "Fader 0–100
    scale and paired dB display". The fader parameters present a 0–100 linear-tick value
    (`displayFloatPrecision` = OneDecimal); the wire stays linear 0.0–1.0 (value/100). Each
@@ -713,6 +717,29 @@ Format: `DECISION: <date> — <topic> — <decision> — <rationale>`
   and the next press waits out the ~2 s timeout — self-healing, and only reachable behind a
   64-deep stalled write backlog. The mtk confirm latency is untested (no Ui24R), so it
   reuses the 2-track timing.
+- DECISION: 2026-08-24 — Channel names as a parameter — Ship the mixer's channel names as
+  the `channel_name` parameter (String, NoControl, NormalFeedback), registered per model
+  with the same channel dimension as `channel_mute`/`channel_fader` (inputs + line-in), and
+  fed from inbound `SETS^{i|l}.<n>.name`. `channel_mute`, `channel_fader`, and
+  `channel_fader_db` set `RecommendedParamForTitleDisplay: "channel_name"` so each strip
+  shows its mixer name. corelib validates the reference against the completed registry at
+  `RegisterDevice` (v0.4.41 `validateAllParams`), so registration order does not matter; an
+  unresolvable title-display reference fatals at core startup either way. `channel_name` is
+  registered first in the loop anyway, matching the `current_snapshot` / snapshot-trigger
+  pattern. — Channel `elementLabels` cannot update at
+  runtime and are model-scoped (shared across all devices of a model), so a per-device live
+  name cannot ride on them; a paired parameter is the supported path. Names arrive in the
+  initial dump, so values populate on connect for free, and a rename on the mixer updates
+  live. An empty name is a legitimate value and passes through as an empty string. The
+  inbound path now carries the wire message kind so a `SETD` on a `.name` path never
+  produces a string parameter and a `SETS` on a numeric `.mute`/`.mix` path never produces
+  a numeric one — the wrong wire type is dropped, not coerced. The kind guard assumes the
+  mixer sends names as SETS — verified on the Ui16 2026-08-24: a read-only dump capture
+  showed every `{i|l}.<n>.name` key (14 of 14) arriving as SETS. One known limit remains,
+  shared with the dimensioned `channel_fader_db` companion: corelib resolves the
+  title-display reference by name only; it does not check that both sides share a
+  dimension. Reactor's per-element pairing of a dimensioned reference is therefore
+  unverified until it runs against real Reactor. Flagged for owner review.
 - DECISION: 2026-08-23 — Multitrack recording-state mapping — Map `var.mtk.rec.currentState`
   directly to the `record_multitrack` Binary (0 = not recording, nonzero = recording), not
   through the `MtkState` player enum. — In soundcraft-ui the recorder's `recording$` reads
