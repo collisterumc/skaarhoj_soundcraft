@@ -522,6 +522,15 @@ Restore proof: snapshot budget was 4 `LOADSNAPSHOT`; recording ran once for ~5 s
 ended with `var.isRecording` = 0 from a fresh connection. Final state fingerprints
 differed from pre-test only in mixer-internal `var.spi*` uptime counters.
 
+**The interactive web UI does expose per-dimension controls.** Verified visually
+2026-08-24 (headless-browser render against a local fake mixer): opening a dimensioned
+parameter and expanding "Dimensions" shows one control block per channel — labeled from
+the registered `elementLabels` ("1 IN 1" …) — with a value field, a min–max slider,
+coarse stepping, and increment/decrement/reset buttons. Undimensioned parameters show a
+live value on their card. The limitations below therefore apply to the CLI pattern
+engine (`testtube test`) only; a human in the web UI can drive any single channel, and
+the milestone's hardware drives used the same grpc-web `Set` those controls emit.
+
 ### TestTube limitations found (v1.0.14-pre2)
 
 - `Binary_default` sends no dimension IDs, so it fails (`UnknownID`) on any dimensioned
